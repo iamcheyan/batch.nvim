@@ -9,3 +9,4 @@ if [[ -f /home/tetsuya/development/night-batch-lab/windows-batch/csv2xls-upload.
 else
   nvim --headless -u NONE -c "set rtp^=$root" -l "$root/tests/night_batch_spec.lua"
 fi
+nvim --headless -u NONE -c "set rtp^=$root" -c "set rtp^=/home/tetsuya/.local/share/nvim/lazy/aerial.nvim" -l "$root/tests/aerial_spec.lua"
