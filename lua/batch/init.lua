@@ -40,7 +40,7 @@ function M.setup(opts)
   })
   vim.api.nvim_create_user_command("BatchCheck", function(args)
     diagnostics.check(args.buf)
-  end, { desc = "Check Batch labels and references" })
+  end, { desc = "Check Batch labels and references", force = true })
   vim.api.nvim_create_user_command("BatchJumpToLabel", function(args)
     if args.args ~= "" then
       local result = require("batch.parser").parse(vim.api.nvim_buf_get_lines(args.buf, 0, -1, false))
@@ -53,13 +53,13 @@ function M.setup(opts)
     else
       navigation.select_label(args.buf)
     end
-  end, { nargs = "?", desc = "Jump to a Batch label" })
+  end, { nargs = "?", desc = "Jump to a Batch label", force = true })
   vim.api.nvim_create_user_command("BatchReferences", function(args)
     navigation.references(args.buf)
-  end, { desc = "List references to the current Batch label" })
+  end, { desc = "List references to the current Batch label", force = true })
   vim.api.nvim_create_user_command("BatchOutline", function(args)
     navigation.outline(args.buf)
-  end, { desc = "Open Batch label outline" })
+  end, { desc = "Open Batch label outline", force = true })
 end
 
 return M
