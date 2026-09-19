@@ -32,6 +32,13 @@ end
 
 function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", M.config, opts or {})
+  local ok_contextline, contextline = pcall(require, "contextline")
+  if ok_contextline then
+    contextline.register("batch", {
+      filetypes = { "dosbatch", "batch" },
+      get_info = require("batch.context").get_info,
+    })
+  end
   vim.filetype.add({ extension = { bat = "dosbatch", cmd = "dosbatch" } })
   vim.api.nvim_create_autocmd("FileType", {
     group = vim.api.nvim_create_augroup("BatchNvim", { clear = true }),
