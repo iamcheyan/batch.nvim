@@ -1,0 +1,65 @@
+local diagnostics = require("batch.diagnostics")
+local navigation = require("batch.navigation")
+
+local M = {}
+M.config = {
+  enable_diagnostics = true,
+  enable_folding = true,
+  enable_statusline = true,
+  map_keys = false,
+}
+
+local function attach(bufnr)
+  if vim.b[bufnr].batch_nvim_attached then
+    return
+  end
+  vim.b[bufnr].batch_nvim_attached = true
+  vim.bo[bufnr].omnifunc = "v:lua.require'batch.completion'.omnifunc"
+  vim.bo[bufnr].commentstring = "REM %s"
+  if M.config.enable_folding then
+    vim.wo.foldmethod = "expr"
+    vim.wo.foldexpr = "v:lua.require'batch.folding'.foldexpr(v:lnum)"
+    vim.wo.foldenable = false
+  end
+  if M.config.map_keys then
+    vim.keymap.set("n", "gd", function() navigation.goto_definition(bufnr) end, { buffer = bufnr, desc = "Batch: jump to label" })
+    vim.keymap.set("n", "gr", function() navigation.references(bufnr) end, { buffer = bufnr, desc = "Batch: label references" })
+  end
+  if M.config.enable_diagnostics then
+    diagnostics.check(bufnr)
+  end
+end
+
+function M.setup(opts)
+  M.config = vim.tbl_deep_extend("force", M.config, opts or {})
+  vim.filetype.add({ extension = { bat = "dosbatch", cmd = "dosbatch" } })
+  vim.api.nvim_create_autocmd("FileType", {
+    group = vim.api.nvim_create_augroup("BatchNvim", { clear = true }),
+    pattern = { "dosbatch", "batch" },
+    callback = function(args) attach(args.buf) end,
+  })
+  vim.api.nvim_create_user_command("BatchCheck", function(args)
+    diagnostics.check(args.buf)
+  end, { desc = "Check Batch labels and references" })
+  vim.api.nvim_create_user_command("BatchJumpToLabel", function(args)
+    if args.args ~= "" then
+      local result = require("batch.parser").parse(vim.api.nvim_buf_get_lines(args.buf, 0, -1, false))
+      local item = result.labels[args.args:lower()]
+      if item then
+        vim.api.nvim_win_set_cursor(0, { item.line, 0 })
+      else
+        vim.notify("Batch label not found: " .. args.args, vim.log.levels.WARN)
+      end
+    else
+      navigation.select_label(args.buf)
+    end
+  end, { nargs = "?", desc = "Jump to a Batch label" })
+  vim.api.nvim_create_user_command("BatchReferences", function(args)
+    navigation.references(args.buf)
+  end, { desc = "List references to the current Batch label" })
+  vim.api.nvim_create_user_command("BatchOutline", function(args)
+    navigation.outline(args.buf)
+  end, { desc = "Open Batch label outline" })
+end
+
+return M

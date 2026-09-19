@@ -1,0 +1,4 @@
+*.swp
+*.swo
+.luacov
+luacov.stats.out

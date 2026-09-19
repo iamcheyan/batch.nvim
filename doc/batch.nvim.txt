@@ -1,0 +1,38 @@
+*batch.nvim*
+
+batch.nvim                                                *batch.nvim*
+
+Neovim support for long Windows Batch files. It extends the native `dosbatch`
+filetype with label indexing, navigation, structural diagnostics, folding,
+completion, and a statusline component.
+
+COMMANDS                                                    *batch-commands*
+
+:BatchCheck              Rebuild diagnostics for the current buffer.
+:BatchJumpToLabel        Select a label and jump to it.
+:BatchJumpToLabel name   Jump directly to a label.
+:BatchReferences         List references to the current target.
+:BatchOutline            Open the label outline.
+
+SETUP                                                        *batch-setup*
+
+The plugin sets up automatically when loaded. With lazy.nvim:
+
+  {
+    "iamcheyan/batch.nvim",
+    ft = { "dosbatch", "batch" },
+    opts = {},
+  }
+
+Mappings are disabled by default. Set `map_keys` to true if buffer-local `gd`
+and `gr` mappings are desired.
+
+STATUSLINE                                                  *batch-statusline*
+
+Use `require("batch.statusline").component()` with lualine, Heirline, or a
+custom statusline implementation.
+
+LIMITATIONS                                                  *batch-limitations*
+
+The plugin performs structural analysis only. It does not execute cmd.exe and
+does not attempt to model every percent-expansion and delayed-expansion rule.
