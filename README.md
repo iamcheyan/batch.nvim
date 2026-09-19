@@ -62,7 +62,8 @@ unchanged. To use `gd` and `gr` for Batch navigation:
 
 ## Statusline
 
-For lualine, Heirline, or a custom statusline:
+For lualine, Heirline, or a custom statusline. It displays the current label,
+line number, and the target on the current `GOTO` or `CALL` line:
 
 ```lua
 local batch_status = require("batch.statusline")
