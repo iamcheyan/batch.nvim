@@ -121,6 +121,11 @@ local csv_buf = vim.api.nvim_win_get_buf(csv_win)
 local csv_lines = vim.api.nvim_buf_get_lines(csv_buf, 0, -1, false)
 assert(csv_lines[1]:find("Variable: %%CSV2XLS_CSV_DIR%%"), "Line 1 should mention Variable: " .. csv_lines[1])
 assert(csv_lines[2]:find("Source.*windows%-batch/night%-batch%.conf:17"), "Line 2 should show night-batch.conf:17: " .. csv_lines[2])
+assert(csv_lines[3]:find("Value %(1/3%): @ROOT@\\data\\input\\csv%-windows"), "Line 3 should show source 1 value: " .. csv_lines[3])
+assert(csv_lines[4]:find("Source %(2/3%).*conf/night%-batch%.conf:17"), "Line 4 should show source 2: " .. csv_lines[4])
+assert(csv_lines[5]:find("Value %(2/3%): @ROOT@\\data\\input\\csv%-conf"), "Line 5 should show source 2 value: " .. csv_lines[5])
+assert(csv_lines[6]:find("Source %(3/3%).*scripts/night%-batch%.conf:17"), "Line 6 should show source 3: " .. csv_lines[6])
+assert(csv_lines[7]:find("Value %(3/3%): @ROOT@\\data\\input\\csv%-scripts"), "Line 7 should show source 3 value: " .. csv_lines[7])
 
 -- Press 'o' directly from main buffer to jump to source definition
 vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("o", true, false, true), "x", false)

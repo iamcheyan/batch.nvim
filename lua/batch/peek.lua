@@ -460,11 +460,13 @@ function M.resolve_variable_peek(bufnr, var_name)
   local links = {}
   local source_file = nil
   local source_line = nil
+  local rendered_per_source_values = false
 
   local rel_buf_path = buf_path ~= "" and buf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "") or "current script"
   if #conf_entries > 1 then
     source_file = primary_conf.conf_path
     source_line = primary_conf.line
+    rendered_per_source_values = true
     for idx, ce in ipairs(conf_entries) do
       local rel_conf = ce.conf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "")
       local loc_str = string.format("%s:%d", rel_conf, ce.line)
@@ -480,6 +482,11 @@ function M.resolve_variable_peek(bufnr, var_name)
         file = ce.conf_path,
         line_num = ce.line,
       })
+
+      -- Keep every source/value pair together.  This makes differences
+      -- between copied configuration files visible without requiring a jump.
+      local value = ce.raw_value ~= "" and ce.raw_value or "[empty]"
+      table.insert(display_lines, string.format("REM Value (%d/%d): %s", idx, #conf_entries, value))
     end
   elseif #conf_entries == 1 then
     source_file = primary_conf.conf_path
@@ -533,7 +540,7 @@ function M.resolve_variable_peek(bufnr, var_name)
   end
 
   -- Value 显示
-  if raw_value and raw_value ~= "" then
+  if not rendered_per_source_values and raw_value and raw_value ~= "" then
     if #resolved_files > 1 then
       table.insert(display_lines, string.format("REM Value: %s  ->  %d matches in project", raw_value, #resolved_files))
       for idx, rf in ipairs(resolved_files) do
@@ -564,7 +571,7 @@ function M.resolve_variable_peek(bufnr, var_name)
     else
       table.insert(display_lines, string.format("REM Value: %s", raw_value))
     end
-  else
+  elseif not rendered_per_source_values then
     table.insert(display_lines, "REM Value: [No static assignment found in config or script]")
   end
 
