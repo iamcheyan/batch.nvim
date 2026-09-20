@@ -86,13 +86,14 @@ assert(label_res, "label_res should not be nil")
 assert(label_res.lines[1]:find("Label:"), "line 1 of label peek should mention label")
 assert(#label_res.lines > 1, "label lines should be populated")
 
--- Test 3: Interactive float window & jump test
+-- Test 3: Double-K direct jump test (file peek)
 -- Switch to buffer and set cursor to line 18, col 36 (the 'conf' extension)
 vim.api.nvim_set_current_buf(bufnr)
 vim.api.nvim_win_set_cursor(0, { 18, 36 })
 
+-- 1st K: opens floating window
 local win = peek.peek(bufnr)
-assert(win and vim.api.nvim_win_is_valid(win), "Floating window should be opened")
+assert(win and vim.api.nvim_win_is_valid(win), "Floating window should be opened on 1st K")
 local float_buf = vim.api.nvim_win_get_buf(win)
 local float_lines = vim.api.nvim_buf_get_lines(float_buf, 0, -1, false)
 assert(#float_lines > 5, "Float buffer should contain preview lines")
@@ -100,18 +101,13 @@ assert(float_lines[1]:find("Path: windows%-batch/night%-batch%.conf"), "Float li
 assert(float_lines[2]:find("───"), "Float line 2 should have separator: " .. float_lines[2])
 assert(float_lines[3]:find("# Shared training"), "Float line 3 should have first code line: " .. float_lines[3])
 
--- Pressing K again should focus into the window
-local win_focused = peek.peek(bufnr)
-assert(win_focused == win, "Second peek call should return active window")
-assert(vim.api.nvim_get_current_win() == win, "Current window should now be the float window")
-
--- Trigger <CR> to jump to target file
-vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
+-- 2nd K: immediately executes direct jump to target file
+peek.peek(bufnr)
 local active_buf = vim.api.nvim_get_current_buf()
 local active_buf_name = vim.api.nvim_buf_get_name(active_buf)
-assert(active_buf_name:find("night%-batch%.conf"), "Active buffer after <CR> should be night-batch.conf: " .. active_buf_name)
+assert(active_buf_name:find("night%-batch%.conf"), "Active buffer after 2nd K should be night-batch.conf: " .. active_buf_name)
 
--- Test 4: Variable peek source jump (e.g. %CSV2XLS_CSV_DIR% -> night-batch.conf:17)
+-- Test 4: Variable peek with 'o' key direct jump (e.g. %CSV2XLS_CSV_DIR% -> night-batch.conf:17)
 vim.api.nvim_set_current_buf(bufnr)
 vim.api.nvim_win_set_cursor(0, { 33, 15 }) -- line 33 is CSV_DIR=%CSV2XLS_CSV_DIR%
 local csv_win = peek.peek(bufnr)
@@ -122,16 +118,28 @@ assert(csv_lines[1]:find("Variable: %%CSV2XLS_CSV_DIR%%"), "Line 1 should mentio
 assert(csv_lines[2]:find("Source: windows%-batch/night%-batch%.conf:17"), "Line 2 should show night-batch.conf:17: " .. csv_lines[2])
 assert(csv_lines[3]:find("Value: @ROOT@\\data\\input\\csv"), "Line 3 should show Value: " .. csv_lines[3])
 
--- Press K again to focus into the window
-local csv_win_focused = peek.peek(bufnr)
-assert(csv_win_focused == csv_win, "Focus into CSV window")
--- Move cursor to line 2 (Source line) and press <CR>
-vim.api.nvim_win_set_cursor(csv_win, { 2, 5 })
-vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
+-- Press 'o' directly from main buffer to jump to source definition
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("o", true, false, true), "x", false)
 local source_buf = vim.api.nvim_get_current_buf()
 local source_buf_name = vim.api.nvim_buf_get_name(source_buf)
-assert(source_buf_name:find("night%-batch%.conf"), "Buffer after Source jump should be night-batch.conf: " .. source_buf_name)
+assert(source_buf_name:find("night%-batch%.conf"), "Buffer after 'o' jump should be night-batch.conf: " .. source_buf_name)
 local cursor_pos = vim.api.nvim_win_get_cursor(0)
 assert(cursor_pos[1] == 17, "Cursor line should jump to line 17 in night-batch.conf, got: " .. tostring(cursor_pos[1]))
+
+-- Test 5: Variable peek with Double-K jump (e.g. %CSV2XLS_LOG_DIR% -> night-batch.conf:21)
+vim.api.nvim_set_current_buf(bufnr)
+vim.api.nvim_win_set_cursor(0, { 37, 15 }) -- line 37 is LOG_DIR=%CSV2XLS_LOG_DIR%
+local log_win = peek.peek(bufnr)
+assert(log_win and vim.api.nvim_win_is_valid(log_win), "LOG_DIR peek window should open on 1st K")
+local log_lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(log_win), 0, -1, false)
+assert(log_lines[1]:find("Variable: %%CSV2XLS_LOG_DIR%%"), "Log line 1 Variable")
+assert(log_lines[2]:find("night%-batch%.conf:21"), "Log line 2 Source night-batch.conf:21")
+
+-- 2nd K: double-K jump to line 21 of night-batch.conf
+peek.peek(bufnr)
+local log_target_buf = vim.api.nvim_get_current_buf()
+assert(vim.api.nvim_buf_get_name(log_target_buf):find("night%-batch%.conf"), "Buffer after double-K should be night-batch.conf")
+local log_pos = vim.api.nvim_win_get_cursor(0)
+assert(log_pos[1] == 21, "Cursor should jump to line 21 in night-batch.conf, got: " .. tostring(log_pos[1]))
 
 print("peek_spec: OK")

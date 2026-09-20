@@ -715,6 +715,17 @@ local function open_float_window(peek_data)
     is_closed = true
     M._active_win = nil
     M._active_buf = nil
+    M._active_jump_fn = nil
+
+    -- 清理主窗口中临时注册的直达与快捷键
+    if vim.api.nvim_buf_is_valid(origin_buf) then
+      pcall(vim.keymap.del, "n", "o", { buffer = origin_buf })
+      pcall(vim.keymap.del, "n", "O", { buffer = origin_buf })
+      pcall(vim.keymap.del, "n", "<Esc>", { buffer = origin_buf })
+      pcall(vim.keymap.del, "n", "<LeftMouse>", { buffer = origin_buf })
+      pcall(vim.keymap.del, "n", "<2-LeftMouse>", { buffer = origin_buf })
+    end
+
     if vim.api.nvim_win_is_valid(win) then
       pcall(vim.api.nvim_win_close, win, true)
     end
@@ -768,33 +779,43 @@ local function open_float_window(peek_data)
     end
   end
 
-  -- 鼠标点击浮窗直接跳转打开文件
-  local function on_mouse_click()
-    local mpos = vim.fn.getmousepos()
-    local clicked_line = (mpos and mpos.winid == win) and mpos.line or nil
-    vim.schedule(function()
-      jump_to_target(clicked_line)
-    end)
+  -- 保存当前直达回调，以便再次按 K 时直接调用
+  M._active_jump_fn = function(clicked_line)
+    jump_to_target(clicked_line)
   end
 
-  vim.keymap.set({ "n", "v" }, "<LeftMouse>", on_mouse_click, { buffer = buf, silent = true })
-  vim.keymap.set({ "n", "v" }, "<2-LeftMouse>", on_mouse_click, { buffer = buf, silent = true })
+  -- 主窗口临时按键绑定（浮窗显示时，按 o/O 或鼠标点击浮窗直接直达）
+  vim.keymap.set("n", "o", function() jump_to_target() end, { buffer = origin_buf, desc = "Jump to peek target", nowait = true })
+  vim.keymap.set("n", "O", function() jump_to_target() end, { buffer = origin_buf, desc = "Jump to peek target", nowait = true })
+  vim.keymap.set("n", "<Esc>", close_window, { buffer = origin_buf, silent = true, nowait = true })
 
-  -- 键盘回车、gd、o 跳转打开文件
-  vim.keymap.set("n", "<CR>", function()
-    local cursor_row = vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_cursor(win)[1] or 1
-    jump_to_target(cursor_row)
-  end, { buffer = buf, silent = true, desc = "Jump to peek target" })
+  local function handle_origin_mouse_click()
+    local mpos = vim.fn.getmousepos()
+    if mpos and mpos.winid == win then
+      jump_to_target(mpos.line)
+    else
+      close_window()
+    end
+  end
+  vim.keymap.set("n", "<LeftMouse>", handle_origin_mouse_click, { buffer = origin_buf, silent = true })
+  vim.keymap.set("n", "<2-LeftMouse>", handle_origin_mouse_click, { buffer = origin_buf, silent = true })
 
-  vim.keymap.set("n", "gd", function()
-    local cursor_row = vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_cursor(win)[1] or 1
-    jump_to_target(cursor_row)
-  end, { buffer = buf, silent = true, desc = "Jump to peek target" })
+  -- 浮窗内部按键绑定
+  vim.keymap.set({ "n", "v" }, "<LeftMouse>", function()
+    local mpos = vim.fn.getmousepos()
+    jump_to_target(mpos and mpos.winid == win and mpos.line or nil)
+  end, { buffer = buf, silent = true })
 
-  vim.keymap.set("n", "o", function()
-    local cursor_row = vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_cursor(win)[1] or 1
-    jump_to_target(cursor_row)
-  end, { buffer = buf, silent = true, desc = "Jump to peek target" })
+  vim.keymap.set({ "n", "v" }, "<2-LeftMouse>", function()
+    local mpos = vim.fn.getmousepos()
+    jump_to_target(mpos and mpos.winid == win and mpos.line or nil)
+  end, { buffer = buf, silent = true })
+
+  vim.keymap.set("n", "o", function() jump_to_target(vim.api.nvim_win_get_cursor(win)[1]) end, { buffer = buf, silent = true, desc = "Jump to peek target" })
+  vim.keymap.set("n", "O", function() jump_to_target(vim.api.nvim_win_get_cursor(win)[1]) end, { buffer = buf, silent = true, desc = "Jump to peek target" })
+  vim.keymap.set("n", "K", function() jump_to_target(vim.api.nvim_win_get_cursor(win)[1]) end, { buffer = buf, silent = true, desc = "Jump to peek target" })
+  vim.keymap.set("n", "gd", function() jump_to_target(vim.api.nvim_win_get_cursor(win)[1]) end, { buffer = buf, silent = true, desc = "Jump to peek target" })
+  vim.keymap.set("n", "<CR>", function() jump_to_target(vim.api.nvim_win_get_cursor(win)[1]) end, { buffer = buf, silent = true, desc = "Jump to peek target" })
 
   -- 浮窗内按 q 或 <Esc> 关闭
   vim.keymap.set("n", "q", close_window, { buffer = buf, silent = true, nowait = true })
@@ -803,11 +824,15 @@ local function open_float_window(peek_data)
   -- 自动关闭机制：
   local augroup = vim.api.nvim_create_augroup("BatchPeekAutoClose_" .. win, { clear = true })
 
-  -- 主窗口光标移动时关闭（仅在用户仍停留在原始窗口内移动时生效）
+  -- 主窗口光标移动时关闭（仅在用户仍停留在原始窗口内移动且非鼠标点击浮窗时生效）
   vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
     group = augroup,
     buffer = origin_buf,
     callback = function()
+      local mpos = vim.fn.getmousepos()
+      if mpos and mpos.winid == win then
+        return
+      end
       local cur_win = vim.api.nvim_get_current_win()
       if cur_win == origin_win then
         close_window()
@@ -848,10 +873,14 @@ end
 function M.peek(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
 
-  -- 如果浮窗已开启，再次按 K 直接聚焦进入浮窗
+  -- 如果浮窗已开启，再次按 K 直接执行直达跳转并打开目标文件/定义（双击 K 直达）
   if M._active_win and vim.api.nvim_win_is_valid(M._active_win) then
-    vim.api.nvim_set_current_win(M._active_win)
-    return M._active_win
+    if M._active_jump_fn then
+      M._active_jump_fn()
+    else
+      pcall(vim.api.nvim_win_close, M._active_win, true)
+    end
+    return nil
   end
 
   local line = vim.api.nvim_get_current_line()
