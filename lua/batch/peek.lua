@@ -58,8 +58,22 @@ end
 
 --- 智能多路径与跨盘符文件解析器
 --- 针对 Windows 脚本中跨盘符（如 C:\ops\...）、%~dp0 相对目录、@ROOT@ 宏及本地调试拷贝路径进行多路径候选探测
-local function resolve_candidate_file(raw_value, buf_dir, project_root)
-  if not raw_value or raw_value == "" then return nil, nil end
+--- 返回匹配到的所有候选文件列表（按优先级去重排序）
+local function resolve_candidate_files(raw_value, buf_dir, project_root)
+  if not raw_value or raw_value == "" then return {} end
+
+  local results = {}
+  local seen = {}
+
+  local function add_match(p)
+    if p and p ~= "" then
+      local norm = vim.fs.normalize(p)
+      if not seen[norm] and file_readable(norm) then
+        seen[norm] = true
+        table.insert(results, norm)
+      end
+    end
+  end
 
   -- 1. 去除包裹引号与首尾空白
   local clean = vim.trim(raw_value):gsub("^\"", ""):gsub("\"$", "")
@@ -75,16 +89,14 @@ local function resolve_candidate_file(raw_value, buf_dir, project_root)
   exp = exp:gsub("\\", "/")
 
   -- 直接命中本地真实文件
-  if file_readable(exp) then
-    return vim.fs.normalize(exp), "direct"
-  end
+  add_match(exp)
 
   -- 3. 去掉 Windows 盘符（如 C:/ops/foo.bat -> ops/foo.bat）
   local no_drive = exp:gsub("^[A-Za-z]:[/\\]*", "")
 
   -- 4. 提取纯文件名（basename）
   local filename = vim.fs.basename(no_drive)
-  if not filename or filename == "" then return nil, nil end
+  if not filename or filename == "" then return results end
 
   -- 5. 多路径候选列表依次查找（当前目录、项目根目录、常见子目录）
   local candidates = {
@@ -94,6 +106,9 @@ local function resolve_candidate_file(raw_value, buf_dir, project_root)
     buf_dir .. "/../" .. filename,
     project_root .. "/" .. filename,
     project_root .. "/windows-batch/" .. filename,
+    project_root .. "/conf/" .. filename,
+    project_root .. "/config/" .. filename,
+    project_root .. "/ops/" .. filename,
     project_root .. "/scripts/" .. filename,
     project_root .. "/scripts/linux/" .. filename,
     project_root .. "/scripts/windows/" .. filename,
@@ -101,8 +116,6 @@ local function resolve_candidate_file(raw_value, buf_dir, project_root)
     project_root .. "/data/input/" .. filename,
     project_root .. "/data/output/" .. filename,
     project_root .. "/bin/" .. filename,
-    project_root .. "/conf/" .. filename,
-    project_root .. "/config/" .. filename,
     project_root .. "/etc/" .. filename,
     project_root .. "/src/" .. filename,
     project_root .. "/cobol-workbook/" .. filename,
@@ -111,37 +124,39 @@ local function resolve_candidate_file(raw_value, buf_dir, project_root)
     project_root .. "/cobol-workbook/data/output/" .. filename,
   }
 
-  local seen = {}
   for _, cand in ipairs(candidates) do
-    local norm = vim.fs.normalize(cand)
-    if not seen[norm] then
-      seen[norm] = true
-      if file_readable(norm) then
-        return norm, "candidate"
-      end
+    add_match(cand)
+  end
+
+  -- 6. 全项目深度扫描：利用 Neovim 内置的 vim.fs.find 遍历整个项目目录树查找所有匹配的文件
+  local found = vim.fs.find(filename, { path = project_root, upward = false, type = "file" })
+  if found and #found > 0 then
+    for _, f in ipairs(found) do
+      add_match(f)
     end
   end
 
-  -- 6. 最终兜底：利用 Neovim 内置的 vim.fs.find 在项目目录树中进行广度优先搜索
-  local found = vim.fs.find(filename, { path = project_root, upward = false, type = "file", limit = 1 })
-  if found and #found > 0 and file_readable(found[1]) then
-    return vim.fs.normalize(found[1]), "search"
-  end
-
-  return nil, nil
+  return results
 end
 
---- 扫描并收集当前脚本可能关联的 .conf 配置文件（包含跨盘符路径智能解析）
+local function resolve_candidate_file(raw_value, buf_dir, project_root)
+  local files = resolve_candidate_files(raw_value, buf_dir, project_root)
+  return files[1], files[1] and "candidate" or nil
+end
+
+--- 扫描并收集当前脚本可能关联的所有 .conf 配置文件（包含跨盘符路径智能解析与全项目探测）
 local function find_conf_files(bufnr, buf_dir, project_root)
   local conf_paths = {}
   local seen = {}
 
   local function add_conf(p)
     if p and p ~= "" then
-      local matched, _ = resolve_candidate_file(p, buf_dir, project_root)
-      if matched and not seen[matched] then
-        seen[matched] = true
-        table.insert(conf_paths, matched)
+      local matched_files = resolve_candidate_files(p, buf_dir, project_root)
+      for _, matched in ipairs(matched_files) do
+        if matched and not seen[matched] then
+          seen[matched] = true
+          table.insert(conf_paths, matched)
+        end
       end
     end
   end
@@ -164,7 +179,25 @@ local function find_conf_files(bufnr, buf_dir, project_root)
   -- 3. 扫描目录下的其他 *.conf 文件
   local glob_pattern = buf_dir .. "/*.conf"
   for _, p in ipairs(vim.fn.glob(glob_pattern, false, true)) do
-    add_conf(p)
+    if file_readable(p) and not seen[p] then
+      seen[p] = true
+      table.insert(conf_paths, p)
+    end
+  end
+
+  -- 4. 全项目扫描所有 *.conf 文件（深度探测，无论配置文件被复制到项目的哪个角落）
+  local found_all_confs = vim.fs.find(function(name, _)
+    return name:match("%.conf$") ~= nil
+  end, { path = project_root, upward = false, type = "file", limit = 30 })
+
+  if found_all_confs then
+    for _, cp in ipairs(found_all_confs) do
+      local norm = vim.fs.normalize(cp)
+      if file_readable(norm) and not seen[norm] then
+        seen[norm] = true
+        table.insert(conf_paths, norm)
+      end
+    end
   end
 
   return conf_paths
@@ -362,33 +395,37 @@ function M.resolve_variable_peek(bufnr, var_name)
     end
   end
 
-  -- 2. 搜索配置文件中的条目（支持跨盘符与多路径查找）
+  -- 2. 搜索配置文件中的条目（支持跨盘符与全项目多路径查找）
   local conf_paths = find_conf_files(bufnr, buf_dir, project_root)
-  local conf_entry = nil
+  local conf_entries = {}
+  local seen_conf_entry = {}
   for _, cp in ipairs(conf_paths) do
     local entries = parse_conf_file(cp)
-    if entries[var_lower] then
-      conf_entry = entries[var_lower]
-      break
-    end
-    -- 如果脚本里 set "INPUT_FILE=%NIGHT_INPUT_FILE%"，顺藤摸瓜寻找所引用的来源变量
-    if #script_assignments > 0 then
+    local found_entry = entries[var_lower]
+    if not found_entry and #script_assignments > 0 then
       for _, assign in ipairs(script_assignments) do
         local chained_var = assign.val:match("%%([%w_]+)%%") or assign.val:match("!([%w_]+)!")
         if chained_var and entries[chained_var:lower()] then
-          conf_entry = entries[chained_var:lower()]
+          found_entry = entries[chained_var:lower()]
           break
         end
       end
     end
-    if conf_entry then break end
+    if found_entry then
+      local loc_key = found_entry.conf_path .. ":" .. tostring(found_entry.line)
+      if not seen_conf_entry[loc_key] then
+        seen_conf_entry[loc_key] = true
+        table.insert(conf_entries, found_entry)
+      end
+    end
   end
 
   -- 3. 确定原始值与对应的来源赋值
   local raw_value = nil
   local active_assignment = nil
-  if conf_entry then
-    raw_value = conf_entry.raw_value
+  local primary_conf = conf_entries[1]
+  if primary_conf then
+    raw_value = primary_conf.raw_value
   elseif #script_assignments > 0 then
     -- 寻找最符合上下文的赋值（优先考虑当前光标所在行之前最近的有效赋值）
     for _, sa in ipairs(script_assignments) do
@@ -409,99 +446,137 @@ function M.resolve_variable_peek(bufnr, var_name)
     raw_value = active_assignment and active_assignment.val or nil
   end
 
-  -- 4. 尝试智能解析跨盘符与本地候选目标文件
-  local resolved_file = nil
+  -- 4. 尝试智能解析跨盘符与本地候选目标文件（支持全项目所有匹配文件）
+  local resolved_files = {}
   if raw_value then
-    resolved_file, _ = resolve_candidate_file(raw_value, buf_dir, project_root)
+    resolved_files = resolve_candidate_files(raw_value, buf_dir, project_root)
   end
+  local primary_target_file = resolved_files[1]
 
-  -- 5. 按照结构化 3 行格式组织头部（全英文）：
+  -- 5. 按照结构化多来源/多匹配格式组织头部（全英文）：
   -- 第一行：显示环境变量
   table.insert(display_lines, string.format("REM Variable: %%%s%%", var_name))
 
-  -- 第二行：显示调用/定义该环境变量的路径与位置（附带下划线跳转链接元数据）
-  local source_str = ""
+  local links = {}
   local source_file = nil
   local source_line = nil
-  local source_link_start = nil
-  local source_link_end = nil
 
   local rel_buf_path = buf_path ~= "" and buf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "") or "current script"
-  if conf_entry then
-    source_file = conf_entry.conf_path
-    source_line = conf_entry.line
-    local rel_conf = conf_entry.conf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "")
-    local loc_str = string.format("%s:%d", rel_conf, conf_entry.line)
+  if #conf_entries > 1 then
+    source_file = primary_conf.conf_path
+    source_line = primary_conf.line
+    for idx, ce in ipairs(conf_entries) do
+      local rel_conf = ce.conf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "")
+      local loc_str = string.format("%s:%d", rel_conf, ce.line)
+      local prefix = string.format("REM Source (%d/%d): ", idx, #conf_entries)
+      local line_idx = #display_lines -- 0-indexed
+      local s_start = #prefix
+      local s_end = #prefix + #loc_str
+      table.insert(display_lines, string.format("%s%s", prefix, loc_str))
+      table.insert(links, {
+        line = line_idx,
+        start_col = s_start,
+        end_col = s_end,
+        file = ce.conf_path,
+        line_num = ce.line,
+      })
+    end
+  elseif #conf_entries == 1 then
+    source_file = primary_conf.conf_path
+    source_line = primary_conf.line
+    local rel_conf = primary_conf.conf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "")
+    local loc_str = string.format("%s:%d", rel_conf, primary_conf.line)
     local prefix = "REM Source: "
-    source_link_start = #prefix
-    source_link_end = #prefix + #loc_str
-    source_str = string.format("%s%s (invoked at %s:%d)", prefix, loc_str, rel_buf_path, cursor_line_num)
+    local line_idx = #display_lines
+    local s_start = #prefix
+    local s_end = #prefix + #loc_str
+    table.insert(display_lines, string.format("%s%s (invoked at %s:%d)", prefix, loc_str, rel_buf_path, cursor_line_num))
+    table.insert(links, {
+      line = line_idx,
+      start_col = s_start,
+      end_col = s_end,
+      file = primary_conf.conf_path,
+      line_num = primary_conf.line,
+    })
   elseif active_assignment then
     source_file = buf_path
     source_line = active_assignment.line
     local loc_str = string.format("%s:%d", rel_buf_path, active_assignment.line)
     local prefix = "REM Source: "
-    source_link_start = #prefix
-    source_link_end = #prefix + #loc_str
-    source_str = string.format("%s%s (%s)", prefix, loc_str, active_assignment.expr)
+    local line_idx = #display_lines
+    local s_start = #prefix
+    local s_end = #prefix + #loc_str
+    table.insert(display_lines, string.format("%s%s (%s)", prefix, loc_str, active_assignment.expr))
+    table.insert(links, {
+      line = line_idx,
+      start_col = s_start,
+      end_col = s_end,
+      file = buf_path,
+      line_num = active_assignment.line,
+    })
   else
     source_file = buf_path
     source_line = cursor_line_num
     local loc_str = string.format("%s:%d", rel_buf_path, cursor_line_num)
     local prefix = "REM Source: "
-    source_link_start = #prefix
-    source_link_end = #prefix + #loc_str
-    source_str = string.format("%s%s (script invocation)", prefix, loc_str)
+    local line_idx = #display_lines
+    local s_start = #prefix
+    local s_end = #prefix + #loc_str
+    table.insert(display_lines, string.format("%s%s (script invocation)", prefix, loc_str))
+    table.insert(links, {
+      line = line_idx,
+      start_col = s_start,
+      end_col = s_end,
+      file = buf_path,
+      line_num = cursor_line_num,
+    })
   end
-  table.insert(display_lines, source_str)
 
-  -- 第三行：显示该环境变量的具体值
-  local val_str = ""
-  local val_link_start = nil
-  local val_link_end = nil
+  -- Value 显示
   if raw_value and raw_value ~= "" then
-    if resolved_file then
-      local rel_resolved = resolved_file:gsub("^" .. vim.pesc(project_root) .. "/?", "")
+    if #resolved_files > 1 then
+      table.insert(display_lines, string.format("REM Value: %s  ->  %d matches in project", raw_value, #resolved_files))
+      for idx, rf in ipairs(resolved_files) do
+        local rel_resolved = rf:gsub("^" .. vim.pesc(project_root) .. "/?", "")
+        local prefix = string.format("REM   [%d] ", idx)
+        local line_idx = #display_lines
+        table.insert(display_lines, string.format("%s%s", prefix, rel_resolved))
+        table.insert(links, {
+          line = line_idx,
+          start_col = #prefix,
+          end_col = #prefix + #rel_resolved,
+          file = rf,
+          line_num = 1,
+        })
+      end
+    elseif #resolved_files == 1 then
+      local rel_resolved = resolved_files[1]:gsub("^" .. vim.pesc(project_root) .. "/?", "")
       local prefix = string.format("REM Value: %s  ->  ", raw_value)
-      val_link_start = #prefix
-      val_link_end = #prefix + #rel_resolved
-      val_str = string.format("%s%s", prefix, rel_resolved)
+      local line_idx = #display_lines
+      table.insert(display_lines, string.format("%s%s", prefix, rel_resolved))
+      table.insert(links, {
+        line = line_idx,
+        start_col = #prefix,
+        end_col = #prefix + #rel_resolved,
+        file = resolved_files[1],
+        line_num = 1,
+      })
     else
-      val_str = string.format("REM Value: %s", raw_value)
+      table.insert(display_lines, string.format("REM Value: %s", raw_value))
     end
   else
-    val_str = "REM Value: [No static assignment found in config or script]"
-  end
-  table.insert(display_lines, val_str)
-
-  -- 收集下划线高亮范围
-  local links = {}
-  if source_link_start and source_link_end then
-    table.insert(links, {
-      line = 1, -- 0-indexed line 1 (second line)
-      start_col = source_link_start,
-      end_col = source_link_end,
-      file = source_file,
-      line_num = source_line,
-    })
-  end
-  if val_link_start and val_link_end and resolved_file then
-    table.insert(links, {
-      line = 2, -- 0-indexed line 2 (third line)
-      start_col = val_link_start,
-      end_col = val_link_end,
-      file = resolved_file,
-      line_num = 1,
-    })
+    table.insert(display_lines, "REM Value: [No static assignment found in config or script]")
   end
 
+  local code_preview_start = nil
   -- 6. 如果穿透命中了具体可读文件，展示分割线并直接呈现目标代码
-  if resolved_file and file_readable(resolved_file) then
-    target_file_path = resolved_file
-    target_filetype = detect_filetype_by_path(resolved_file)
+  if primary_target_file and file_readable(primary_target_file) then
+    target_file_path = primary_target_file
+    target_filetype = detect_filetype_by_path(primary_target_file)
     table.insert(display_lines, string.format("REM ──────────────────────────────────────────────────────────"))
+    code_preview_start = #display_lines + 1
 
-    local target_lines = vim.fn.readfile(resolved_file, "", 35)
+    local target_lines = vim.fn.readfile(primary_target_file, "", 35)
     for _, tl in ipairs(target_lines) do
       table.insert(display_lines, tl)
     end
@@ -515,7 +590,7 @@ function M.resolve_variable_peek(bufnr, var_name)
     source_file = source_file,
     source_line = source_line,
     links = links,
-    content_start_line = (resolved_file and file_readable(resolved_file)) and 5 or nil,
+    content_start_line = code_preview_start,
   }
 end
 
@@ -578,7 +653,7 @@ function M.resolve_label_peek(bufnr, label_name)
   }
 end
 
---- 解析并生成文件引用的穿透预览数据（极简模式：只显示路径与源码预览，点击或回车直达）
+--- 解析并生成文件引用的穿透预览数据（极简模式：多匹配列出所有候选路径，点击或回车直达）
 function M.resolve_file_peek(bufnr, file_target)
   local buf_path = vim.api.nvim_buf_get_name(bufnr)
   local buf_dir = buf_path ~= "" and vim.fs.dirname(buf_path) or vim.fn.getcwd()
@@ -592,33 +667,38 @@ function M.resolve_file_peek(bufnr, file_target)
     cursor_line_num = vim.api.nvim_win_get_cursor(0)[1]
   end
 
-  -- 尝试解析本地工程候选文件
-  local resolved_file, _ = resolve_candidate_file(raw_target, buf_dir, project_root)
-  if not resolved_file and filename and filename ~= raw_target then
-    resolved_file, _ = resolve_candidate_file(filename, buf_dir, project_root)
+  -- 尝试解析本地工程所有候选文件
+  local resolved_files = resolve_candidate_files(raw_target, buf_dir, project_root)
+  if #resolved_files == 0 and filename and filename ~= raw_target then
+    resolved_files = resolve_candidate_files(filename, buf_dir, project_root)
   end
 
   local display_lines = {}
   local links = {}
-  local target_filetype = resolved_file and detect_filetype_by_path(resolved_file) or detect_filetype_by_path(filename or "")
+  local primary_file = resolved_files[1]
+  local target_filetype = primary_file and detect_filetype_by_path(primary_file) or detect_filetype_by_path(filename or "")
 
-  -- 第一行：直接显示路径（下划线链接），去掉多余的文件与来源信息
-  if resolved_file and file_readable(resolved_file) then
-    local rel_resolved = resolved_file:gsub("^" .. vim.pesc(project_root) .. "/?", "")
-    local p_prefix = "REM Path: "
-    local path_link_start = #p_prefix
-    local path_link_end = #p_prefix + #rel_resolved
-    table.insert(display_lines, string.format("%s%s", p_prefix, rel_resolved))
-    table.insert(links, {
-      line = 0, -- 0-indexed line 0 (first line)
-      start_col = path_link_start,
-      end_col = path_link_end,
-      file = resolved_file,
-      line_num = 1,
-    })
+  if #resolved_files > 0 then
+    -- 如果有多个匹配文件，将所有候选路径均列出，且每一行都可以独立点击/跳转
+    for idx, rf in ipairs(resolved_files) do
+      local rel_path = rf:gsub("^" .. vim.pesc(project_root) .. "/?", "")
+      local prefix = #resolved_files > 1 and string.format("REM Path (%d/%d): ", idx, #resolved_files) or "REM Path: "
+      local line_idx = #display_lines -- 0-indexed
+      local p_start = #prefix
+      local p_end = #prefix + #rel_path
+      table.insert(display_lines, string.format("%s%s", prefix, rel_path))
+      table.insert(links, {
+        line = line_idx,
+        start_col = p_start,
+        end_col = p_end,
+        file = rf,
+        line_num = 1,
+      })
+    end
+
     table.insert(display_lines, string.format("REM ──────────────────────────────────────────────────────────"))
 
-    local target_lines = vim.fn.readfile(resolved_file, "", 40)
+    local target_lines = vim.fn.readfile(primary_file, "", 40)
     for _, tl in ipairs(target_lines) do
       table.insert(display_lines, tl)
     end
@@ -629,12 +709,12 @@ function M.resolve_file_peek(bufnr, file_target)
   return {
     lines = display_lines,
     filetype = target_filetype,
-    target_file = resolved_file,
+    target_file = primary_file,
     target_line = 1,
     source_file = buf_path,
     source_line = cursor_line_num,
     links = links,
-    content_start_line = 3,
+    content_start_line = #resolved_files > 0 and (#resolved_files + 2) or 3,
   }
 end
 
@@ -739,16 +819,20 @@ local function open_float_window(peek_data)
 
     local content_start = peek_data.content_start_line or 5
 
-    -- 1. 用户点击第 2 行（Source 行）或焦点在第 2 行（仅在多行头部 variable/label peek 场景）：跳转到定义来源
-    if clicked_line == 2 and peek_data.source_file and file_readable(peek_data.source_file) and content_start > 3 then
-      vim.cmd("edit " .. vim.fn.fnameescape(peek_data.source_file))
-      if peek_data.source_line and peek_data.source_line > 0 then
-        pcall(vim.api.nvim_win_set_cursor, 0, { peek_data.source_line, 0 })
+    -- 0. 优先检查是否点击或光标落在任意链接行（支持多 Path、多 Source、多 Value 任意跳转）
+    if clicked_line and peek_data.links then
+      for _, link in ipairs(peek_data.links) do
+        -- link.line 是 0-indexed，clicked_line 是 1-indexed
+        if clicked_line == (link.line + 1) and link.file and file_readable(link.file) then
+          vim.cmd("edit " .. vim.fn.fnameescape(link.file))
+          local target_ln = link.line_num or 1
+          pcall(vim.api.nvim_win_set_cursor, 0, { math.max(1, target_ln), 0 })
+          return
+        end
       end
-      return
     end
 
-    -- 2. 用户点击代码预览行（第 content_start 行及以后）：定位到目标文件的对应行
+    -- 1. 用户点击代码预览行（第 content_start 行及以后）：定位到目标文件的对应行
     if clicked_line and clicked_line >= content_start and peek_data.target_file and file_readable(peek_data.target_file) then
       local line_num = clicked_line - content_start + 1
       vim.cmd("edit " .. vim.fn.fnameescape(peek_data.target_file))
@@ -756,7 +840,7 @@ local function open_float_window(peek_data)
       return
     end
 
-    -- 3. 若有目标文件：打开目标文件
+    -- 2. 若有目标文件（例如 double-K 或直接按 'o'）：打开主目标文件
     if peek_data.target_file and file_readable(peek_data.target_file) then
       local line_num = peek_data.target_line or 1
       vim.cmd("edit " .. vim.fn.fnameescape(peek_data.target_file))
@@ -764,7 +848,7 @@ local function open_float_window(peek_data)
       return
     end
 
-    -- 4. 若无外部目标文件（例如值不是文件，只是变量目录或字符串），点击直接跳转到来源定义处
+    -- 3. 若无外部目标文件（例如值不是文件，只是变量目录或字符串），直接跳转到来源定义处
     if peek_data.source_file and file_readable(peek_data.source_file) then
       vim.cmd("edit " .. vim.fn.fnameescape(peek_data.source_file))
       if peek_data.source_line and peek_data.source_line > 0 then
@@ -773,7 +857,7 @@ local function open_float_window(peek_data)
       return
     end
 
-    -- 5. 标签行跳转兜底
+    -- 4. 标签行跳转兜底
     if peek_data.target_line and peek_data.target_line > 0 then
       pcall(vim.api.nvim_win_set_cursor, origin_win, { peek_data.target_line, 0 })
     end

@@ -49,16 +49,19 @@ end
 local bufnr = vim.fn.bufadd(fixture_path)
 vim.fn.bufload(bufnr)
 
--- Resolve file peek for night-batch.conf directly (simplified format: Path only on line 1)
+-- Resolve file peek for night-batch.conf directly (supports single or multiple paths)
 local file_res = peek.resolve_file_peek(bufnr, target_conf_ext)
 assert(file_res, "file_res should not be nil")
-assert(file_res.lines[1]:find("Path: windows%-batch/night%-batch%.conf"), "file_res line 1 should mention Path: " .. tostring(file_res.lines[1]))
-assert(file_res.lines[2]:find("───"), "file_res line 2 should be separator: " .. tostring(file_res.lines[2]))
-assert(file_res.lines[3]:find("# Shared training"), "file_res line 3 should be first code line: " .. tostring(file_res.lines[3]))
+assert(file_res.lines[1]:find("Path.*windows%-batch/night%-batch%.conf"), "file_res line 1 should mention Path: " .. tostring(file_res.lines[1]))
 assert(file_res.target_file, "file_res target_file should be resolved")
 assert(file_res.target_file:find("night%-batch%.conf"), "file_res target_file should point to night-batch.conf")
 assert(#file_res.lines > 5, "file_res lines should include file content")
 assert(#file_res.links >= 1, "file_res should have clickable links")
+
+-- If multiple files exist in project, verify they are all listed
+if #file_res.lines > 6 and file_res.lines[2]:find("Path") then
+  assert(file_res.lines[2]:find("conf/night%-batch%.conf") or file_res.lines[2]:find("scripts/night%-batch%.conf"), "Line 2 should list another candidate")
+end
 
 -- Resolve CONFIG_FILE (assigned in script via %~dp0night-batch.conf)
 local config_file_res = peek.resolve_variable_peek(bufnr, "CONFIG_FILE")
@@ -70,8 +73,7 @@ assert(config_file_res.target_file:find("night%-batch%.conf"), "config_file_res 
 local var_res = peek.resolve_variable_peek(bufnr, "NIGHT_VALIDATE_BAT")
 assert(var_res, "var_res should not be nil")
 assert(var_res.lines[1]:find("NIGHT_VALIDATE_BAT"), "line 1 should mention variable name: " .. tostring(var_res.lines[1]))
-assert(var_res.lines[2]:find("Source:"), "line 2 should show source: " .. tostring(var_res.lines[2]))
-assert(var_res.lines[3]:find("Value:"), "line 3 should show value: " .. tostring(var_res.lines[3]))
+assert(var_res.lines[2]:find("Source"), "line 2 should show source: " .. tostring(var_res.lines[2]))
 assert(var_res.target_file, "target_file should be resolved")
 assert(var_res.target_file:find("validate%-input%.bat"), "target_file should point to validate-input.bat")
 assert(#var_res.lines > 5, "lines should include file content")
@@ -97,9 +99,7 @@ assert(win and vim.api.nvim_win_is_valid(win), "Floating window should be opened
 local float_buf = vim.api.nvim_win_get_buf(win)
 local float_lines = vim.api.nvim_buf_get_lines(float_buf, 0, -1, false)
 assert(#float_lines > 5, "Float buffer should contain preview lines")
-assert(float_lines[1]:find("Path: windows%-batch/night%-batch%.conf"), "Float line 1 should have Path: " .. float_lines[1])
-assert(float_lines[2]:find("───"), "Float line 2 should have separator: " .. float_lines[2])
-assert(float_lines[3]:find("# Shared training"), "Float line 3 should have first code line: " .. float_lines[3])
+assert(float_lines[1]:find("Path.*windows%-batch/night%-batch%.conf"), "Float line 1 should have Path: " .. float_lines[1])
 
 -- 2nd K: immediately executes direct jump to target file
 peek.peek(bufnr)
@@ -115,8 +115,7 @@ assert(csv_win and vim.api.nvim_win_is_valid(csv_win), "CSV2XLS_CSV_DIR peek win
 local csv_buf = vim.api.nvim_win_get_buf(csv_win)
 local csv_lines = vim.api.nvim_buf_get_lines(csv_buf, 0, -1, false)
 assert(csv_lines[1]:find("Variable: %%CSV2XLS_CSV_DIR%%"), "Line 1 should mention Variable: " .. csv_lines[1])
-assert(csv_lines[2]:find("Source: windows%-batch/night%-batch%.conf:17"), "Line 2 should show night-batch.conf:17: " .. csv_lines[2])
-assert(csv_lines[3]:find("Value: @ROOT@\\data\\input\\csv"), "Line 3 should show Value: " .. csv_lines[3])
+assert(csv_lines[2]:find("Source.*windows%-batch/night%-batch%.conf:17"), "Line 2 should show night-batch.conf:17: " .. csv_lines[2])
 
 -- Press 'o' directly from main buffer to jump to source definition
 vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("o", true, false, true), "x", false)
@@ -141,5 +140,32 @@ local log_target_buf = vim.api.nvim_get_current_buf()
 assert(vim.api.nvim_buf_get_name(log_target_buf):find("night%-batch%.conf"), "Buffer after double-K should be night-batch.conf")
 local log_pos = vim.api.nvim_win_get_cursor(0)
 assert(log_pos[1] == 21, "Cursor should jump to line 21 in night-batch.conf, got: " .. tostring(log_pos[1]))
+
+-- Test 6: Multi-match verification (3 night-batch.conf copies: windows-batch, conf, scripts)
+vim.api.nvim_set_current_buf(bufnr)
+vim.api.nvim_win_set_cursor(0, { 18, 36 }) -- on night-batch.conf
+local multi_win = peek.peek(bufnr)
+assert(multi_win and vim.api.nvim_win_is_valid(multi_win), "Multi-match window should open")
+local multi_lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(multi_win), 0, -1, false)
+-- Verify that multiple paths are listed with (i/N) counter
+assert(multi_lines[1]:find("Path %(1/3%): windows%-batch/night%-batch%.conf"), "Line 1 should be Path (1/3): " .. multi_lines[1])
+assert(multi_lines[2]:find("Path %(2/3%): conf/night%-batch%.conf"), "Line 2 should be Path (2/3): " .. multi_lines[2])
+assert(multi_lines[3]:find("Path %(3/3%): scripts/night%-batch%.conf"), "Line 3 should be Path (3/3): " .. multi_lines[3])
+
+-- Clicking line 2 (conf/night-batch.conf) should jump directly to conf/night-batch.conf
+peek._active_jump_fn(2)
+local conf_buf = vim.api.nvim_get_current_buf()
+local conf_buf_name = vim.api.nvim_buf_get_name(conf_buf)
+assert(conf_buf_name:find("conf/night%-batch%.conf"), "Should jump to conf/night-batch.conf, got: " .. conf_buf_name)
+
+-- Re-open and click line 3 (scripts/night-batch.conf)
+vim.api.nvim_set_current_buf(bufnr)
+vim.api.nvim_win_set_cursor(0, { 18, 36 })
+local multi_win2 = peek.peek(bufnr)
+assert(multi_win2 and vim.api.nvim_win_is_valid(multi_win2), "Multi-match window 2 should open")
+peek._active_jump_fn(3)
+local scripts_buf = vim.api.nvim_get_current_buf()
+local scripts_buf_name = vim.api.nvim_buf_get_name(scripts_buf)
+assert(scripts_buf_name:find("scripts/night%-batch%.conf"), "Should jump to scripts/night-batch.conf, got: " .. scripts_buf_name)
 
 print("peek_spec: OK")
