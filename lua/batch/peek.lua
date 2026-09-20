@@ -590,6 +590,16 @@ function M.resolve_variable_peek(bufnr, var_name)
     source_file = source_file,
     source_line = source_line,
     links = links,
+    -- Variable sources are the candidates users should choose with 1/2/3...
+    -- when the same definition exists in several project copies.
+    jump_targets = (function()
+      if #conf_entries <= 1 then return links end
+      local candidates = {}
+      for idx = 1, #conf_entries do
+        candidates[idx] = links[idx]
+      end
+      return candidates
+    end)(),
     content_start_line = code_preview_start,
   }
 end
@@ -714,6 +724,7 @@ function M.resolve_file_peek(bufnr, file_target)
     source_file = buf_path,
     source_line = cursor_line_num,
     links = links,
+    jump_targets = links,
     content_start_line = #resolved_files > 0 and (#resolved_files + 2) or 3,
   }
 end
@@ -787,6 +798,9 @@ local function open_float_window(peek_data)
 
   M._active_win = win
   M._active_buf = buf
+  local jump_targets = peek_data.jump_targets or {}
+  local has_multiple_targets = #jump_targets > 1
+  M._active_multi = has_multiple_targets
 
   -- 4. 注册跳转与自动销毁机制
   local is_closed = false
@@ -795,6 +809,7 @@ local function open_float_window(peek_data)
     is_closed = true
     M._active_win = nil
     M._active_buf = nil
+    M._active_multi = nil
     M._active_jump_fn = nil
 
     -- 清理主窗口中临时注册的直达与快捷键
@@ -804,6 +819,9 @@ local function open_float_window(peek_data)
       pcall(vim.keymap.del, "n", "<Esc>", { buffer = origin_buf })
       pcall(vim.keymap.del, "n", "<LeftMouse>", { buffer = origin_buf })
       pcall(vim.keymap.del, "n", "<2-LeftMouse>", { buffer = origin_buf })
+      for idx = 1, 9 do
+        pcall(vim.keymap.del, "n", tostring(idx), { buffer = origin_buf })
+      end
     end
 
     if vim.api.nvim_win_is_valid(win) then
@@ -873,6 +891,18 @@ local function open_float_window(peek_data)
   vim.keymap.set("n", "O", function() jump_to_target() end, { buffer = origin_buf, desc = "Jump to peek target", nowait = true })
   vim.keymap.set("n", "<Esc>", close_window, { buffer = origin_buf, silent = true, nowait = true })
 
+  -- With several matches, number keys select the corresponding visible
+  -- candidate.  These mappings are temporary and exist only while this peek
+  -- is open, so normal numeric motions keep their usual meaning otherwise.
+  if has_multiple_targets then
+    for idx = 1, math.min(9, #jump_targets) do
+      local target = jump_targets[idx]
+      vim.keymap.set("n", tostring(idx), function()
+        jump_to_target(target.line + 1)
+      end, { buffer = origin_buf, desc = "Jump to peek candidate " .. idx, nowait = true, silent = true })
+    end
+  end
+
   local function handle_origin_mouse_click()
     local mpos = vim.fn.getmousepos()
     if mpos and mpos.winid == win then
@@ -897,9 +927,24 @@ local function open_float_window(peek_data)
 
   vim.keymap.set("n", "o", function() jump_to_target(vim.api.nvim_win_get_cursor(win)[1]) end, { buffer = buf, silent = true, desc = "Jump to peek target" })
   vim.keymap.set("n", "O", function() jump_to_target(vim.api.nvim_win_get_cursor(win)[1]) end, { buffer = buf, silent = true, desc = "Jump to peek target" })
-  vim.keymap.set("n", "K", function() jump_to_target(vim.api.nvim_win_get_cursor(win)[1]) end, { buffer = buf, silent = true, desc = "Jump to peek target" })
+  vim.keymap.set("n", "K", function()
+    if has_multiple_targets then
+      vim.notify("Batch: multiple peek candidates — press 1, 2, 3... to choose", vim.log.levels.INFO)
+      return
+    end
+    jump_to_target(vim.api.nvim_win_get_cursor(win)[1])
+  end, { buffer = buf, silent = true, desc = "Jump to peek target" })
   vim.keymap.set("n", "gd", function() jump_to_target(vim.api.nvim_win_get_cursor(win)[1]) end, { buffer = buf, silent = true, desc = "Jump to peek target" })
   vim.keymap.set("n", "<CR>", function() jump_to_target(vim.api.nvim_win_get_cursor(win)[1]) end, { buffer = buf, silent = true, desc = "Jump to peek target" })
+
+  if has_multiple_targets then
+    for idx = 1, math.min(9, #jump_targets) do
+      local target = jump_targets[idx]
+      vim.keymap.set("n", tostring(idx), function()
+        jump_to_target(target.line + 1)
+      end, { buffer = buf, desc = "Jump to peek candidate " .. idx, nowait = true, silent = true })
+    end
+  end
 
   -- 浮窗内按 q 或 <Esc> 关闭
   vim.keymap.set("n", "q", close_window, { buffer = buf, silent = true, nowait = true })
@@ -959,6 +1004,10 @@ function M.peek(bufnr)
 
   -- 如果浮窗已开启，再次按 K 直接执行直达跳转并打开目标文件/定义（双击 K 直达）
   if M._active_win and vim.api.nvim_win_is_valid(M._active_win) then
+    if M._active_multi then
+      vim.notify("Batch: multiple peek candidates — press 1, 2, 3... to choose", vim.log.levels.INFO)
+      return M._active_win
+    end
     if M._active_jump_fn then
       M._active_jump_fn()
     else

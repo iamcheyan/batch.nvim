@@ -101,11 +101,16 @@ local float_lines = vim.api.nvim_buf_get_lines(float_buf, 0, -1, false)
 assert(#float_lines > 5, "Float buffer should contain preview lines")
 assert(float_lines[1]:find("Path.*windows%-batch/night%-batch%.conf"), "Float line 1 should have Path: " .. float_lines[1])
 
--- 2nd K: immediately executes direct jump to target file
+-- 2nd K: multi-match peek stays open; numeric keys choose a candidate
 peek.peek(bufnr)
-local active_buf = vim.api.nvim_get_current_buf()
-local active_buf_name = vim.api.nvim_buf_get_name(active_buf)
-assert(active_buf_name:find("night%-batch%.conf"), "Active buffer after 2nd K should be night-batch.conf: " .. active_buf_name)
+assert(vim.api.nvim_win_is_valid(win), "Multi-match peek should remain open after 2nd K")
+assert(vim.api.nvim_get_current_buf() == bufnr, "Multi-match 2nd K should keep the source buffer active")
+
+-- Move into the float and close it before starting the next independent peek.
+vim.api.nvim_set_current_win(win)
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("q", true, false, true), "x", false)
+vim.wait(10)
+vim.api.nvim_set_current_buf(bufnr)
 
 -- Test 4: Variable peek with 'o' key direct jump (e.g. %CSV2XLS_CSV_DIR% -> night-batch.conf:17)
 vim.api.nvim_set_current_buf(bufnr)
@@ -134,10 +139,12 @@ local log_lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(log_win), 
 assert(log_lines[1]:find("Variable: %%CSV2XLS_LOG_DIR%%"), "Log line 1 Variable")
 assert(log_lines[2]:find("night%-batch%.conf:21"), "Log line 2 Source night-batch.conf:21")
 
--- 2nd K: double-K jump to line 21 of night-batch.conf
+-- Multi-source double-K keeps the peek open; choose source 1 explicitly.
 peek.peek(bufnr)
+assert(vim.api.nvim_win_is_valid(log_win), "Multi-source peek should remain open after 2nd K")
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("1", true, false, true), "x", false)
 local log_target_buf = vim.api.nvim_get_current_buf()
-assert(vim.api.nvim_buf_get_name(log_target_buf):find("night%-batch%.conf"), "Buffer after double-K should be night-batch.conf")
+assert(vim.api.nvim_buf_get_name(log_target_buf):find("night%-batch%.conf"), "Key 1 should jump to night-batch.conf")
 local log_pos = vim.api.nvim_win_get_cursor(0)
 assert(log_pos[1] == 21, "Cursor should jump to line 21 in night-batch.conf, got: " .. tostring(log_pos[1]))
 
@@ -152,7 +159,22 @@ assert(multi_lines[1]:find("Path %(1/3%): windows%-batch/night%-batch%.conf"), "
 assert(multi_lines[2]:find("Path %(2/3%): conf/night%-batch%.conf"), "Line 2 should be Path (2/3): " .. multi_lines[2])
 assert(multi_lines[3]:find("Path %(3/3%): scripts/night%-batch%.conf"), "Line 3 should be Path (3/3): " .. multi_lines[3])
 
+-- Double-K must keep a multi-candidate peek open so the user can see that
+-- there are several matches; numeric keys choose the desired candidate.
+peek.peek(bufnr)
+assert(vim.api.nvim_win_is_valid(multi_win), "Double-K should keep the multi-match peek open")
+assert(vim.api.nvim_get_current_buf() == bufnr, "Double-K should not leave the source buffer for multi-match peek")
+
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("2", true, false, true), "x", false)
+local numeric_buf = vim.api.nvim_get_current_buf()
+local numeric_buf_name = vim.api.nvim_buf_get_name(numeric_buf)
+assert(numeric_buf_name:find("conf/night%-batch%.conf"), "Key 2 should jump to conf/night-batch.conf, got: " .. numeric_buf_name)
+
 -- Clicking line 2 (conf/night-batch.conf) should jump directly to conf/night-batch.conf
+vim.api.nvim_set_current_buf(bufnr)
+vim.api.nvim_win_set_cursor(0, { 18, 36 })
+local click_win = peek.peek(bufnr)
+assert(click_win and vim.api.nvim_win_is_valid(click_win), "Multi-match window should reopen for click test")
 peek._active_jump_fn(2)
 local conf_buf = vim.api.nvim_get_current_buf()
 local conf_buf_name = vim.api.nvim_buf_get_name(conf_buf)
