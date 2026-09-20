@@ -5,6 +5,12 @@ function M.get_info(opts)
   if not info then
     return nil
   end
+  -- A top-level line with no target has no useful code context.  In
+  -- particular, do not keep an otherwise empty contextline winbar visible
+  -- merely because the status component knows the current line number.
+  if info.label == "TOP LEVEL" and not info.target then
+    return nil
+  end
   local segments = {}
   if info.label and info.label ~= "" then
     table.insert(segments, {
