@@ -57,15 +57,20 @@ local function get_project_root(buf_dir)
 end
 
 --- 智能多路径与跨盘符文件解析器
---- 针对 Windows 脚本中跨盘符（如 C:\ops\...）、@ROOT@ 宏及本地调试拷贝路径进行多路径候选探测
+--- 针对 Windows 脚本中跨盘符（如 C:\ops\...）、%~dp0 相对目录、@ROOT@ 宏及本地调试拷贝路径进行多路径候选探测
 local function resolve_candidate_file(raw_value, buf_dir, project_root)
   if not raw_value or raw_value == "" then return nil, nil end
 
   -- 1. 去除包裹引号与首尾空白
   local clean = vim.trim(raw_value):gsub("^\"", ""):gsub("\"$", "")
 
-  -- 2. 展开常见的 Batch 宏 (@ROOT@, @DATE@) 并统一反斜杠
-  local exp = clean:gsub("@ROOT@", project_root)
+  -- 2. 展开常见的 Batch 宏与参数修饰符并统一反斜杠
+  local exp = clean
+  if buf_dir and buf_dir ~= "" then
+    exp = exp:gsub("%%~dp0", buf_dir .. "/")
+  end
+  exp = exp:gsub("%%~[a-zA-Z]*%d*", "")
+  exp = exp:gsub("@ROOT@", project_root)
   exp = exp:gsub("@DATE@", os.date("%Y%m%d"))
   exp = exp:gsub("\\", "/")
 
@@ -145,8 +150,8 @@ local function find_conf_files(bufnr, buf_dir, project_root)
   if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
     for _, line in ipairs(lines) do
-      -- 匹配 *.conf 文件名或完整路径
-      for conf_ref in line:gmatch("([%w_%-%.\\/:]+%.conf)") do
+      -- 匹配 *.conf 文件名或完整路径（兼容 %~dp0 与 Windows 盘符）
+      for conf_ref in line:gmatch("([%w_%-%.\\/:~%%]+%.conf)") do
         add_conf(conf_ref)
       end
     end
@@ -205,6 +210,67 @@ local function extract_word_at_col(line, col)
   return word:match("^[%w_%-]+$") and word or ""
 end
 
+--- 提取光标所在位置的候选路径或文件名 token
+local function extract_path_token_at_col(line, col)
+  if not line or line == "" then return "" end
+  col = math.max(1, math.min(#line, col or 1))
+
+  -- 分隔符：空白、双引号、单引号、等号、逗号、分号、尖括号、管道、圆括号
+  local is_delim = function(c)
+    return c:match("[%s\"'=,;<>&|%(%)]") ~= nil
+  end
+
+  local ch = line:sub(col, col)
+  if is_delim(ch) then
+    return ""
+  end
+
+  local s = col
+  while s > 1 and not is_delim(line:sub(s - 1, s - 1)) do
+    s = s - 1
+  end
+
+  local e = col
+  while e < #line and not is_delim(line:sub(e + 1, e + 1)) do
+    e = e + 1
+  end
+
+  return line:sub(s, e)
+end
+
+--- 判定一个 token 是否为有效的文件名或路径候选
+local function is_file_token(token)
+  if not token or token == "" then return false end
+  -- 排除纯批处理参数如 %~1, %1, %~dp0 单独出现
+  if token:match("^%%~?%w+$") then
+    return false
+  end
+  -- 包含文件扩展名 (例如 .conf, .bat, .cmd, .csv, .txt, .js, .json, .ini, .log, .exe, .cob 等)
+  if token:match("%.[%w_%-]+$") then
+    return true
+  end
+  -- 包含路径分隔符 (/ 或 \)
+  if token:find("[/\\]") then
+    return true
+  end
+  -- Windows 绝对路径 C:\...
+  if token:match("^[A-Za-z]:[/\\]") then
+    return true
+  end
+  return false
+end
+
+--- 从原始 token 中提取纯文件名（basename）
+local function extract_filename_from_token(token)
+  if not token or token == "" then return "" end
+  local clean = token:gsub("^[\"']", ""):gsub("[\"']$", "")
+  clean = clean:gsub("^%%~[a-zA-Z]*%d*", "")
+  clean = clean:gsub("^[A-Za-z]:[/\\]*", "")
+  clean = clean:gsub("\\", "/")
+  local fname = vim.fs.basename(clean)
+  return (fname and fname ~= "") and fname or clean
+end
+
 --- 从当前光标位置提取目标（变量、标签、文件路径）
 function M.extract_target_under_cursor(line, col)
   line = line or vim.api.nvim_get_current_line()
@@ -220,7 +286,7 @@ function M.extract_target_under_cursor(line, col)
     end
   end
 
-  -- 2. 检查光标处的带百分号环境变量：%VAR% 或 %~dp0
+  -- 2. 检查光标处的带百分号环境变量：%VAR%
   for s, var_name, e in line:gmatch("()%%([%w_]+)%%()") do
     if col >= s and col <= e then
       return { type = "variable", name = var_name, raw = "%" .. var_name .. "%" }
@@ -240,7 +306,18 @@ function M.extract_target_under_cursor(line, col)
     return { type = "label", name = def_label }
   end
 
-  -- 5. 回退到当前列单词并判断是否为已知变量或标签
+  -- 5. 检查光标处是否位于文件引用或路径上（例如 night-batch.conf、%~dp0load-config.bat、C:\ops\night-batch.conf）
+  local path_token = extract_path_token_at_col(line, col)
+  if path_token and path_token ~= "" and is_file_token(path_token) then
+    local fname = extract_filename_from_token(path_token)
+    return {
+      type = "file",
+      raw = path_token,
+      name = fname,
+    }
+  end
+
+  -- 6. 回退到当前列单词并判断是否为已知变量或标识符
   local word = extract_word_at_col(line, col)
   if word == "" then
     local ok, cw = pcall(vim.fn.expand, "<cword>")
@@ -307,12 +384,29 @@ function M.resolve_variable_peek(bufnr, var_name)
     if conf_entry then break end
   end
 
-  -- 3. 确定原始值
+  -- 3. 确定原始值与对应的来源赋值
   local raw_value = nil
+  local active_assignment = nil
   if conf_entry then
     raw_value = conf_entry.raw_value
   elseif #script_assignments > 0 then
-    raw_value = script_assignments[#script_assignments].val
+    -- 寻找最符合上下文的赋值（优先考虑当前光标所在行之前最近的有效赋值）
+    for _, sa in ipairs(script_assignments) do
+      if sa.line <= cursor_line_num then
+        active_assignment = sa
+      end
+    end
+    -- 若当前位置选中的是参数占位符（如 %~2），或者光标在最前面，优先回退到具备具体初值的赋值
+    if not active_assignment or active_assignment.val:match("^%%~?%d+$") then
+      for _, sa in ipairs(script_assignments) do
+        if not sa.val:match("^%%~?%d+$") then
+          active_assignment = sa
+          break
+        end
+      end
+    end
+    active_assignment = active_assignment or script_assignments[#script_assignments]
+    raw_value = active_assignment and active_assignment.val or nil
   end
 
   -- 4. 尝试智能解析跨盘符与本地候选目标文件
@@ -331,9 +425,8 @@ function M.resolve_variable_peek(bufnr, var_name)
   if conf_entry then
     local rel_conf = conf_entry.conf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "")
     source_str = string.format("REM 来源: %s:%d (于 %s:%d 调用)", rel_conf, conf_entry.line, rel_buf_path, cursor_line_num)
-  elseif #script_assignments > 0 then
-    local sa = script_assignments[#script_assignments]
-    source_str = string.format("REM 来源: %s:%d (%s)", rel_buf_path, sa.line, sa.expr)
+  elseif active_assignment then
+    source_str = string.format("REM 来源: %s:%d (%s)", rel_buf_path, active_assignment.line, active_assignment.expr)
   else
     source_str = string.format("REM 来源: %s:%d (脚本调用处)", rel_buf_path, cursor_line_num)
   end
@@ -344,7 +437,7 @@ function M.resolve_variable_peek(bufnr, var_name)
   if raw_value and raw_value ~= "" then
     if resolved_file then
       local rel_resolved = resolved_file:gsub("^" .. vim.pesc(project_root) .. "/?", "")
-      val_str = string.format("REM 取值: %s  ->  %s", raw_value, rel_resolved)
+      val_str = string.format("REM 取值: %s  ->  %s  (点击或按回车直达)", raw_value, rel_resolved)
     else
       val_str = string.format("REM 取值: %s", raw_value)
     end
@@ -369,6 +462,7 @@ function M.resolve_variable_peek(bufnr, var_name)
     lines = display_lines,
     filetype = target_filetype,
     target_file = target_file_path,
+    target_line = 1,
   }
 end
 
@@ -393,7 +487,7 @@ function M.resolve_label_peek(bufnr, label_name)
   -- 统一三行头部
   table.insert(preview_lines, string.format("REM 标签: :%s", label_item.name))
   table.insert(preview_lines, string.format("REM 来源: %s:%d", rel_buf_path, start_line))
-  table.insert(preview_lines, string.format("REM 说明: 子程序定义代码段"))
+  table.insert(preview_lines, string.format("REM 说明: 子程序定义代码段 (点击或按回车直达)"))
   table.insert(preview_lines, string.format("REM ──────────────────────────────────────────────────────────"))
 
   local max_lines = 30
@@ -408,15 +502,76 @@ function M.resolve_label_peek(bufnr, label_name)
   return {
     lines = preview_lines,
     filetype = "dosbatch",
+    target_line = start_line,
   }
 end
 
---- 打开完全不透明的现代浮动窗口（无边框标题，极简外观）
+--- 解析并生成文件引用的穿透预览数据（严格三行头部规范 + 源码透视 + 直达跳转）
+function M.resolve_file_peek(bufnr, file_target)
+  local buf_path = vim.api.nvim_buf_get_name(bufnr)
+  local buf_dir = buf_path ~= "" and vim.fs.dirname(buf_path) or vim.fn.getcwd()
+  local project_root = get_project_root(buf_dir)
+
+  local raw_target = type(file_target) == "table" and (file_target.raw or file_target.name) or file_target
+  local filename = type(file_target) == "table" and file_target.name or vim.fs.basename(raw_target)
+
+  local cursor_line_num = 1
+  if bufnr == vim.api.nvim_get_current_buf() then
+    cursor_line_num = vim.api.nvim_win_get_cursor(0)[1]
+  end
+
+  local rel_buf_path = buf_path ~= "" and buf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "") or "当前脚本"
+
+  -- 尝试解析本地工程候选文件
+  local resolved_file, _ = resolve_candidate_file(raw_target, buf_dir, project_root)
+  if not resolved_file and filename and filename ~= raw_target then
+    resolved_file, _ = resolve_candidate_file(filename, buf_dir, project_root)
+  end
+
+  local display_lines = {}
+  local target_filetype = resolved_file and detect_filetype_by_path(resolved_file) or detect_filetype_by_path(filename or "")
+
+  -- 第一行：显示目标文件（含原始引用）
+  if raw_target and raw_target ~= filename then
+    table.insert(display_lines, string.format("REM 文件: %s (引用: %s)", filename, raw_target))
+  else
+    table.insert(display_lines, string.format("REM 文件: %s", filename or raw_target))
+  end
+
+  -- 第二行：显示来源位置
+  table.insert(display_lines, string.format("REM 来源: %s:%d (脚本引用处)", rel_buf_path, cursor_line_num))
+
+  -- 第三行：显示解析出的本地路径与直达提示
+  if resolved_file and file_readable(resolved_file) then
+    local rel_resolved = resolved_file:gsub("^" .. vim.pesc(project_root) .. "/?", "")
+    table.insert(display_lines, string.format("REM 路径: %s  (点击浮窗或按回车直达)", rel_resolved))
+    table.insert(display_lines, string.format("REM ──────────────────────────────────────────────────────────"))
+
+    local target_lines = vim.fn.readfile(resolved_file, "", 40)
+    for _, tl in ipairs(target_lines) do
+      table.insert(display_lines, tl)
+    end
+  else
+    table.insert(display_lines, string.format("REM 路径: [未在工程候选路径中找到本地对应文件: %s]", filename or raw_target))
+  end
+
+  return {
+    lines = display_lines,
+    filetype = target_filetype,
+    target_file = resolved_file,
+    target_line = 1,
+  }
+end
+
+--- 打开完全不透明的现代浮动窗口（无边框标题，极简外观，支持鼠标点击与键盘直达跳转）
 local function open_float_window(peek_data)
   if not peek_data or not peek_data.lines or #peek_data.lines == 0 then
     vim.notify("Batch: 未找到可预览的穿透内容", vim.log.levels.INFO)
     return nil
   end
+
+  local origin_win = vim.api.nvim_get_current_win()
+  local origin_buf = vim.api.nvim_get_current_buf()
 
   local lines = peek_data.lines
   local filetype = peek_data.filetype or "dosbatch"
@@ -450,8 +605,7 @@ local function open_float_window(peek_data)
   }
 
   -- 边界检查：若光标下方空间不足，则向上弹出
-  local current_win = vim.api.nvim_get_current_win()
-  local win_height = vim.api.nvim_win_get_height(current_win)
+  local win_height = vim.api.nvim_win_get_height(origin_win)
   local cursor_win_row = vim.fn.winline()
   if cursor_win_row + height + 2 > win_height and cursor_win_row > height + 2 then
     win_opts.row = -(height + 2)
@@ -464,8 +618,16 @@ local function open_float_window(peek_data)
   vim.wo[win].wrap = false
   vim.wo[win].cursorline = true
 
-  -- 4. 注册快捷键与自动销毁机制
+  M._active_win = win
+  M._active_buf = buf
+
+  -- 4. 注册跳转与自动销毁机制
+  local is_closed = false
   local function close_window()
+    if is_closed then return end
+    is_closed = true
+    M._active_win = nil
+    M._active_buf = nil
     if vim.api.nvim_win_is_valid(win) then
       pcall(vim.api.nvim_win_close, win, true)
     end
@@ -474,25 +636,95 @@ local function open_float_window(peek_data)
     end
   end
 
+  local function jump_to_target(clicked_line)
+    if peek_data.target_file and file_readable(peek_data.target_file) then
+      local target_file = peek_data.target_file
+      local line_num = peek_data.target_line or 1
+      if clicked_line and clicked_line >= 5 then
+        line_num = clicked_line - 4
+      end
+      close_window()
+      vim.cmd("edit " .. vim.fn.fnameescape(target_file))
+      pcall(vim.api.nvim_win_set_cursor, 0, { math.max(1, line_num), 0 })
+    elseif peek_data.target_line and peek_data.target_line > 0 then
+      local line_num = peek_data.target_line
+      close_window()
+      pcall(vim.api.nvim_win_set_cursor, origin_win, { line_num, 0 })
+    else
+      close_window()
+    end
+  end
+
+  -- 鼠标点击浮窗直接跳转打开文件
+  local function on_mouse_click()
+    local mpos = vim.fn.getmousepos()
+    local clicked_line = (mpos and mpos.winid == win) and mpos.line or nil
+    vim.schedule(function()
+      jump_to_target(clicked_line)
+    end)
+  end
+
+  vim.keymap.set({ "n", "v" }, "<LeftMouse>", on_mouse_click, { buffer = buf, silent = true })
+  vim.keymap.set({ "n", "v" }, "<2-LeftMouse>", on_mouse_click, { buffer = buf, silent = true })
+
+  -- 键盘回车、gd、o 跳转打开文件
+  vim.keymap.set("n", "<CR>", function()
+    local cursor_row = vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_cursor(win)[1] or 1
+    jump_to_target(cursor_row)
+  end, { buffer = buf, silent = true, desc = "打开穿透目标文件" })
+
+  vim.keymap.set("n", "gd", function()
+    local cursor_row = vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_cursor(win)[1] or 1
+    jump_to_target(cursor_row)
+  end, { buffer = buf, silent = true, desc = "打开穿透目标文件" })
+
+  vim.keymap.set("n", "o", function()
+    local cursor_row = vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_cursor(win)[1] or 1
+    jump_to_target(cursor_row)
+  end, { buffer = buf, silent = true, desc = "打开穿透目标文件" })
+
   -- 浮窗内按 q 或 <Esc> 关闭
   vim.keymap.set("n", "q", close_window, { buffer = buf, silent = true, nowait = true })
   vim.keymap.set("n", "<Esc>", close_window, { buffer = buf, silent = true, nowait = true })
 
-  -- 若用户在浮窗内按回车，且有穿透目标文件，直接跳转打开目标文件
-  if peek_data.target_file and file_readable(peek_data.target_file) then
-    vim.keymap.set("n", "<CR>", function()
-      close_window()
-      vim.cmd("edit " .. vim.fn.fnameescape(peek_data.target_file))
-    end, { buffer = buf, silent = true, desc = "打开穿透目标文件" })
-  end
-
-  -- 主窗口光标一旦移动，或者切出 buffer，自动关闭浮窗
+  -- 自动关闭机制：
   local augroup = vim.api.nvim_create_augroup("BatchPeekAutoClose_" .. win, { clear = true })
-  vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "BufLeave", "WinLeave" }, {
+
+  -- 主窗口光标移动时关闭（仅在用户仍停留在原始窗口内移动时生效）
+  vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
     group = augroup,
-    once = true,
+    buffer = origin_buf,
     callback = function()
-      close_window()
+      local cur_win = vim.api.nvim_get_current_win()
+      if cur_win == origin_win then
+        close_window()
+      end
+    end,
+  })
+
+  -- 原始窗口失焦时，如果不是进入浮窗，则安全关闭
+  vim.api.nvim_create_autocmd({ "WinLeave" }, {
+    group = augroup,
+    buffer = origin_buf,
+    callback = function()
+      vim.schedule(function()
+        if is_closed or not vim.api.nvim_win_is_valid(win) then return end
+        local cur_win = vim.api.nvim_get_current_win()
+        if cur_win ~= win and cur_win ~= origin_win then
+          close_window()
+        end
+      end)
+    end,
+  })
+
+  -- 浮窗自身失焦时（例如用户在浮窗内切出到外部窗口），安全关闭
+  vim.api.nvim_create_autocmd({ "WinLeave", "BufLeave" }, {
+    group = augroup,
+    buffer = buf,
+    callback = function()
+      vim.schedule(function()
+        close_window()
+      end)
     end,
   })
 
@@ -502,12 +734,19 @@ end
 --- 预览穿透主入口函数
 function M.peek(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+  -- 如果浮窗已开启，再次按 K 直接聚焦进入浮窗
+  if M._active_win and vim.api.nvim_win_is_valid(M._active_win) then
+    vim.api.nvim_set_current_win(M._active_win)
+    return M._active_win
+  end
+
   local line = vim.api.nvim_get_current_line()
   local col = vim.fn.col(".")
 
   local target = M.extract_target_under_cursor(line, col)
   if not target then
-    vim.notify("Batch: 光标处未检测到环境变量或标签", vim.log.levels.INFO)
+    vim.notify("Batch: 光标处未检测到环境变量、文件或标签", vim.log.levels.INFO)
     return nil
   end
 
@@ -516,10 +755,12 @@ function M.peek(bufnr)
     peek_data = M.resolve_variable_peek(bufnr, target.name)
   elseif target.type == "label" then
     peek_data = M.resolve_label_peek(bufnr, target.name)
+  elseif target.type == "file" then
+    peek_data = M.resolve_file_peek(bufnr, target)
   end
 
   if not peek_data then
-    vim.notify("Batch: 无法解析 " .. tostring(target.name) .. " 的穿透信息", vim.log.levels.WARN)
+    vim.notify("Batch: 无法解析 " .. tostring(target.name or target.raw) .. " 的穿透信息", vim.log.levels.WARN)
     return nil
   end
 

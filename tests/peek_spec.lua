@@ -16,6 +16,28 @@ assert(target3, "Target 3 should not be nil")
 assert(target3.type == "variable", "Target 3 should be variable")
 assert(target3.name == "CSV2XLS_CONVERTER", "Target 3 name should be CSV2XLS_CONVERTER")
 
+-- Test 1b: File targets and cursor on extension/filename
+local conf_line = 'set "CONFIG_FILE=%~dp0night-batch.conf"'
+-- Cursor on 'conf' (col 37)
+local target_conf_ext = peek.extract_target_under_cursor(conf_line, 37)
+assert(target_conf_ext, "target_conf_ext should not be nil")
+assert(target_conf_ext.type == "file", "target_conf_ext should be file type: " .. tostring(target_conf_ext.type))
+assert(target_conf_ext.name == "night-batch.conf", "target_conf_ext name should be night-batch.conf: " .. tostring(target_conf_ext.name))
+assert(target_conf_ext.raw == "%~dp0night-batch.conf", "target_conf_ext raw should be %~dp0night-batch.conf: " .. tostring(target_conf_ext.raw))
+
+-- Cursor on 'night-batch' (col 25)
+local target_conf_base = peek.extract_target_under_cursor(conf_line, 25)
+assert(target_conf_base and target_conf_base.type == "file" and target_conf_base.name == "night-batch.conf", "target_conf_base mismatch")
+
+-- Cursor on 'CONFIG_FILE' (col 10) should be recognized as variable
+local target_conf_var = peek.extract_target_under_cursor(conf_line, 10)
+assert(target_conf_var and target_conf_var.type == "variable" and target_conf_var.name == "CONFIG_FILE", "target_conf_var mismatch")
+
+-- Call with bat file
+local bat_call_line = 'call "%~dp0load-config.bat" "%CONFIG_FILE%"'
+local target_bat = peek.extract_target_under_cursor(bat_call_line, 15)
+assert(target_bat and target_bat.type == "file" and target_bat.name == "load-config.bat", "target_bat mismatch")
+
 -- Test 2: Full resolution with fixture if available
 local fixture_path = vim.env.BATCH_NVIM_FIXTURE
 if not fixture_path or vim.fn.filereadable(fixture_path) == 0 then
@@ -26,6 +48,22 @@ end
 -- Create a scratch buffer with the fixture file
 local bufnr = vim.fn.bufadd(fixture_path)
 vim.fn.bufload(bufnr)
+
+-- Resolve file peek for night-batch.conf directly
+local file_res = peek.resolve_file_peek(bufnr, target_conf_ext)
+assert(file_res, "file_res should not be nil")
+assert(file_res.lines[1]:find("night%-batch%.conf"), "file_res line 1 should mention filename: " .. tostring(file_res.lines[1]))
+assert(file_res.lines[2]:find("来源:"), "file_res line 2 should show source: " .. tostring(file_res.lines[2]))
+assert(file_res.lines[3]:find("路径:"), "file_res line 3 should show path: " .. tostring(file_res.lines[3]))
+assert(file_res.target_file, "file_res target_file should be resolved")
+assert(file_res.target_file:find("night%-batch%.conf"), "file_res target_file should point to night-batch.conf")
+assert(#file_res.lines > 5, "file_res lines should include file content")
+
+-- Resolve CONFIG_FILE (assigned in script via %~dp0night-batch.conf)
+local config_file_res = peek.resolve_variable_peek(bufnr, "CONFIG_FILE")
+assert(config_file_res, "config_file_res should not be nil")
+assert(config_file_res.target_file, "config_file_res target_file should be resolved")
+assert(config_file_res.target_file:find("night%-batch%.conf"), "config_file_res target_file should point to night-batch.conf")
 
 -- Resolve NIGHT_VALIDATE_BAT (assigned via conf)
 local var_res = peek.resolve_variable_peek(bufnr, "NIGHT_VALIDATE_BAT")
@@ -45,5 +83,29 @@ end
 assert(label_res, "label_res should not be nil")
 assert(label_res.lines[1]:find("标签:"), "line 1 of label peek should mention label")
 assert(#label_res.lines > 1, "label lines should be populated")
+
+-- Test 3: Interactive float window & jump test
+-- Switch to buffer and set cursor to line 18, col 36 (the 'conf' extension)
+vim.api.nvim_set_current_buf(bufnr)
+vim.api.nvim_win_set_cursor(0, { 18, 36 })
+
+local win = peek.peek(bufnr)
+assert(win and vim.api.nvim_win_is_valid(win), "Floating window should be opened")
+local float_buf = vim.api.nvim_win_get_buf(win)
+local float_lines = vim.api.nvim_buf_get_lines(float_buf, 0, -1, false)
+assert(#float_lines > 5, "Float buffer should contain preview lines")
+assert(float_lines[1]:find("night%-batch%.conf"), "Float line 1 should have night-batch.conf: " .. float_lines[1])
+assert(float_lines[3]:find("点击浮窗或按回车直达"), "Float line 3 should have jump hint: " .. float_lines[3])
+
+-- Pressing K again should focus into the window
+local win_focused = peek.peek(bufnr)
+assert(win_focused == win, "Second peek call should return active window")
+assert(vim.api.nvim_get_current_win() == win, "Current window should now be the float window")
+
+-- Trigger <CR> to jump to target file
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
+local active_buf = vim.api.nvim_get_current_buf()
+local active_buf_name = vim.api.nvim_buf_get_name(active_buf)
+assert(active_buf_name:find("night%-batch%.conf"), "Active buffer after <CR> should be night-batch.conf: " .. active_buf_name)
 
 print("peek_spec: OK")
