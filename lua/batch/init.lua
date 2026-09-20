@@ -1,13 +1,17 @@
 local diagnostics = require("batch.diagnostics")
 local navigation = require("batch.navigation")
+local peek = require("batch.peek")
 
 local M = {}
 M.config = {
   enable_diagnostics = true,
   enable_folding = true,
   enable_statusline = true,
+  enable_peek = true,
   map_keys = false,
 }
+
+M.peek = peek.peek
 
 local function attach(bufnr)
   if vim.b[bufnr].batch_nvim_attached then
@@ -24,6 +28,8 @@ local function attach(bufnr)
   if M.config.map_keys then
     vim.keymap.set("n", "gd", function() navigation.goto_definition(bufnr) end, { buffer = bufnr, desc = "Batch: jump to label" })
     vim.keymap.set("n", "gr", function() navigation.references(bufnr) end, { buffer = bufnr, desc = "Batch: label references" })
+    vim.keymap.set("n", "K", function() peek.peek(bufnr) end, { buffer = bufnr, desc = "Batch: peek env variable / label" })
+    vim.keymap.set("n", "zp", function() peek.peek(bufnr) end, { buffer = bufnr, desc = "Batch: peek env variable / label" })
   end
   if M.config.enable_diagnostics then
     diagnostics.check(bufnr)
@@ -67,6 +73,9 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("BatchOutline", function(args)
     navigation.outline(args.buf)
   end, { desc = "Open Batch label outline", force = true })
+  vim.api.nvim_create_user_command("BatchPeek", function(args)
+    peek.peek(args.buf)
+  end, { desc = "Peek Batch variable, label or called script", force = true })
 end
 
 return M

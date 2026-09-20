@@ -48,9 +48,10 @@ project.
 | `:BatchJumpToLabel name` | Jump to a label by name |
 | `:BatchReferences` | List `GOTO`/`CALL` references to the current target |
 | `:BatchOutline` | Open the label outline |
+| `:BatchPeek` | 预览穿透：原地浮窗预览环境变量定义、.conf 配置来源及调用的外部脚本源码 |
 
 Key mappings are not installed by default. This keeps normal Neovim behavior
-unchanged. To use `gd` and `gr` for Batch navigation:
+unchanged. To use `gd`, `gr`, and `K` / `zp` (预览穿透) for Batch navigation:
 
 ```lua
 {
@@ -59,6 +60,11 @@ unchanged. To use `gd` and `gr` for Batch navigation:
   opts = { map_keys = true },
 }
 ```
+
+When `map_keys = true`, the following mappings are active in Batch files:
+- `K` or `zp`: 原地触发“预览穿透”（Peek Through），如果光标在环境变量上（如 `%NIGHT_VALIDATE_BAT%` 或 `!INPUT_FILE!`），穿透显示赋值语句、`.conf` 键值来源以及被引用文件的真实源码；如果光标在 `:label`，就地预览子程序实现。
+- `gd`: 跳转到标签定义。
+- `gr`: 查看标签引用列表。
 
 ## Statusline
 
