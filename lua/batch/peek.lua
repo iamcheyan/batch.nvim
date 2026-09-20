@@ -515,6 +515,7 @@ function M.resolve_variable_peek(bufnr, var_name)
     source_file = source_file,
     source_line = source_line,
     links = links,
+    content_start_line = (resolved_file and file_readable(resolved_file)) and 5 or nil,
   }
 end
 
@@ -573,10 +574,11 @@ function M.resolve_label_peek(bufnr, label_name)
     source_file = buf_path,
     source_line = start_line,
     links = links,
+    content_start_line = 5,
   }
 end
 
---- 解析并生成文件引用的穿透预览数据（严格三行头部规范 + 源码透视 + 直达跳转）
+--- 解析并生成文件引用的穿透预览数据（极简模式：只显示路径与源码预览，点击或回车直达）
 function M.resolve_file_peek(bufnr, file_target)
   local buf_path = vim.api.nvim_buf_get_name(bufnr)
   local buf_dir = buf_path ~= "" and vim.fs.dirname(buf_path) or vim.fn.getcwd()
@@ -590,8 +592,6 @@ function M.resolve_file_peek(bufnr, file_target)
     cursor_line_num = vim.api.nvim_win_get_cursor(0)[1]
   end
 
-  local rel_buf_path = buf_path ~= "" and buf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "") or "current script"
-
   -- 尝试解析本地工程候选文件
   local resolved_file, _ = resolve_candidate_file(raw_target, buf_dir, project_root)
   if not resolved_file and filename and filename ~= raw_target then
@@ -602,31 +602,7 @@ function M.resolve_file_peek(bufnr, file_target)
   local links = {}
   local target_filetype = resolved_file and detect_filetype_by_path(resolved_file) or detect_filetype_by_path(filename or "")
 
-  -- 第一行：显示目标文件（含原始引用）
-  if raw_target and raw_target ~= filename then
-    table.insert(display_lines, string.format("REM File: %s (ref: %s)", filename, raw_target))
-  else
-    table.insert(display_lines, string.format("REM File: %s", filename or raw_target))
-  end
-
-  -- 第二行：显示来源位置
-  local source_file = buf_path
-  local source_line = cursor_line_num
-  local loc_str = string.format("%s:%d", rel_buf_path, cursor_line_num)
-  local prefix = "REM Source: "
-  local source_link_start = #prefix
-  local source_link_end = #prefix + #loc_str
-  table.insert(display_lines, string.format("%s%s (script reference)", prefix, loc_str))
-
-  table.insert(links, {
-    line = 1,
-    start_col = source_link_start,
-    end_col = source_link_end,
-    file = source_file,
-    line_num = source_line,
-  })
-
-  -- 第三行：显示解析出的本地路径
+  -- 第一行：直接显示路径（下划线链接），去掉多余的文件与来源信息
   if resolved_file and file_readable(resolved_file) then
     local rel_resolved = resolved_file:gsub("^" .. vim.pesc(project_root) .. "/?", "")
     local p_prefix = "REM Path: "
@@ -634,7 +610,7 @@ function M.resolve_file_peek(bufnr, file_target)
     local path_link_end = #p_prefix + #rel_resolved
     table.insert(display_lines, string.format("%s%s", p_prefix, rel_resolved))
     table.insert(links, {
-      line = 2,
+      line = 0, -- 0-indexed line 0 (first line)
       start_col = path_link_start,
       end_col = path_link_end,
       file = resolved_file,
@@ -655,16 +631,17 @@ function M.resolve_file_peek(bufnr, file_target)
     filetype = target_filetype,
     target_file = resolved_file,
     target_line = 1,
-    source_file = source_file,
-    source_line = source_line,
+    source_file = buf_path,
+    source_line = cursor_line_num,
     links = links,
+    content_start_line = 3,
   }
 end
 
 --- 打开完全不透明的现代浮动窗口（无边框标题，极简外观，支持鼠标点击与键盘直达跳转）
 local function open_float_window(peek_data)
   if not peek_data or not peek_data.lines or #peek_data.lines == 0 then
-    vim.notify("Batch: 未找到可预览的穿透内容", vim.log.levels.INFO)
+    vim.notify("Batch: No peek preview available", vim.log.levels.INFO)
     return nil
   end
 
@@ -749,8 +726,10 @@ local function open_float_window(peek_data)
   local function jump_to_target(clicked_line)
     close_window()
 
-    -- 1. 用户点击第 2 行（Source 行）或焦点在第 2 行：跳转到变量赋值/定义的来源文件与行号
-    if clicked_line == 2 and peek_data.source_file and file_readable(peek_data.source_file) then
+    local content_start = peek_data.content_start_line or 5
+
+    -- 1. 用户点击第 2 行（Source 行）或焦点在第 2 行（仅在多行头部 variable/label peek 场景）：跳转到定义来源
+    if clicked_line == 2 and peek_data.source_file and file_readable(peek_data.source_file) and content_start > 3 then
       vim.cmd("edit " .. vim.fn.fnameescape(peek_data.source_file))
       if peek_data.source_line and peek_data.source_line > 0 then
         pcall(vim.api.nvim_win_set_cursor, 0, { peek_data.source_line, 0 })
@@ -758,23 +737,15 @@ local function open_float_window(peek_data)
       return
     end
 
-    -- 2. 用户点击代码预览行（第 5 行及以后）：定位到目标文件的对应行
-    if clicked_line and clicked_line >= 5 and peek_data.target_file and file_readable(peek_data.target_file) then
-      local line_num = clicked_line - 4
+    -- 2. 用户点击代码预览行（第 content_start 行及以后）：定位到目标文件的对应行
+    if clicked_line and clicked_line >= content_start and peek_data.target_file and file_readable(peek_data.target_file) then
+      local line_num = clicked_line - content_start + 1
       vim.cmd("edit " .. vim.fn.fnameescape(peek_data.target_file))
       pcall(vim.api.nvim_win_set_cursor, 0, { math.max(1, line_num), 0 })
       return
     end
 
-    -- 3. 用户在第 3 行（Value/Path）点击，且有目标文件：跳转到目标文件
-    if clicked_line == 3 and peek_data.target_file and file_readable(peek_data.target_file) then
-      local line_num = peek_data.target_line or 1
-      vim.cmd("edit " .. vim.fn.fnameescape(peek_data.target_file))
-      pcall(vim.api.nvim_win_set_cursor, 0, { math.max(1, line_num), 0 })
-      return
-    end
-
-    -- 4. 若有目标文件（例如 night-batch.conf 或外部 bat）：跳转到目标文件
+    -- 3. 若有目标文件：打开目标文件
     if peek_data.target_file and file_readable(peek_data.target_file) then
       local line_num = peek_data.target_line or 1
       vim.cmd("edit " .. vim.fn.fnameescape(peek_data.target_file))
@@ -782,7 +753,7 @@ local function open_float_window(peek_data)
       return
     end
 
-    -- 5. 若无外部目标文件（例如值不是文件，只是变量目录或字符串），点击直接跳转到来源定义处
+    -- 4. 若无外部目标文件（例如值不是文件，只是变量目录或字符串），点击直接跳转到来源定义处
     if peek_data.source_file and file_readable(peek_data.source_file) then
       vim.cmd("edit " .. vim.fn.fnameescape(peek_data.source_file))
       if peek_data.source_line and peek_data.source_line > 0 then
@@ -791,7 +762,7 @@ local function open_float_window(peek_data)
       return
     end
 
-    -- 6. 标签行跳转兜底
+    -- 5. 标签行跳转兜底
     if peek_data.target_line and peek_data.target_line > 0 then
       pcall(vim.api.nvim_win_set_cursor, origin_win, { peek_data.target_line, 0 })
     end

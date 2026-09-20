@@ -49,12 +49,12 @@ end
 local bufnr = vim.fn.bufadd(fixture_path)
 vim.fn.bufload(bufnr)
 
--- Resolve file peek for night-batch.conf directly
+-- Resolve file peek for night-batch.conf directly (simplified format: Path only on line 1)
 local file_res = peek.resolve_file_peek(bufnr, target_conf_ext)
 assert(file_res, "file_res should not be nil")
-assert(file_res.lines[1]:find("night%-batch%.conf"), "file_res line 1 should mention filename: " .. tostring(file_res.lines[1]))
-assert(file_res.lines[2]:find("Source:"), "file_res line 2 should show source: " .. tostring(file_res.lines[2]))
-assert(file_res.lines[3]:find("Path:"), "file_res line 3 should show path: " .. tostring(file_res.lines[3]))
+assert(file_res.lines[1]:find("Path: windows%-batch/night%-batch%.conf"), "file_res line 1 should mention Path: " .. tostring(file_res.lines[1]))
+assert(file_res.lines[2]:find("───"), "file_res line 2 should be separator: " .. tostring(file_res.lines[2]))
+assert(file_res.lines[3]:find("# Shared training"), "file_res line 3 should be first code line: " .. tostring(file_res.lines[3]))
 assert(file_res.target_file, "file_res target_file should be resolved")
 assert(file_res.target_file:find("night%-batch%.conf"), "file_res target_file should point to night-batch.conf")
 assert(#file_res.lines > 5, "file_res lines should include file content")
@@ -96,9 +96,9 @@ assert(win and vim.api.nvim_win_is_valid(win), "Floating window should be opened
 local float_buf = vim.api.nvim_win_get_buf(win)
 local float_lines = vim.api.nvim_buf_get_lines(float_buf, 0, -1, false)
 assert(#float_lines > 5, "Float buffer should contain preview lines")
-assert(float_lines[1]:find("File: night%-batch%.conf"), "Float line 1 should have File: " .. float_lines[1])
-assert(float_lines[2]:find("Source: "), "Float line 2 should have Source: " .. float_lines[2])
-assert(float_lines[3]:find("Path: "), "Float line 3 should have Path: " .. float_lines[3])
+assert(float_lines[1]:find("Path: windows%-batch/night%-batch%.conf"), "Float line 1 should have Path: " .. float_lines[1])
+assert(float_lines[2]:find("───"), "Float line 2 should have separator: " .. float_lines[2])
+assert(float_lines[3]:find("# Shared training"), "Float line 3 should have first code line: " .. float_lines[3])
 
 -- Pressing K again should focus into the window
 local win_focused = peek.peek(bufnr)
