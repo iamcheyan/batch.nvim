@@ -25,11 +25,13 @@ local function attach(bufnr)
     vim.wo.foldexpr = "v:lua.require'batch.folding'.foldexpr(v:lnum)"
     vim.wo.foldenable = false
   end
+  if M.config.enable_peek then
+    vim.keymap.set("n", "K", function() peek.peek(bufnr) end, { buffer = bufnr, desc = "Batch: peek env variable / label" })
+    vim.keymap.set("n", "zp", function() peek.peek(bufnr) end, { buffer = bufnr, desc = "Batch: peek env variable / label" })
+  end
   if M.config.map_keys then
     vim.keymap.set("n", "gd", function() navigation.goto_definition(bufnr) end, { buffer = bufnr, desc = "Batch: jump to label" })
     vim.keymap.set("n", "gr", function() navigation.references(bufnr) end, { buffer = bufnr, desc = "Batch: label references" })
-    vim.keymap.set("n", "K", function() peek.peek(bufnr) end, { buffer = bufnr, desc = "Batch: peek env variable / label" })
-    vim.keymap.set("n", "zp", function() peek.peek(bufnr) end, { buffer = bufnr, desc = "Batch: peek env variable / label" })
   end
   if M.config.enable_diagnostics then
     diagnostics.check(bufnr)

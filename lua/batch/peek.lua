@@ -56,35 +56,105 @@ local function get_project_root(buf_dir)
   return current
 end
 
---- 扫描并收集当前脚本可能关联的 .conf 配置文件
-local function find_conf_files(bufnr, buf_dir)
+--- 智能多路径与跨盘符文件解析器
+--- 针对 Windows 脚本中跨盘符（如 C:\ops\...）、@ROOT@ 宏及本地调试拷贝路径进行多路径候选探测
+local function resolve_candidate_file(raw_value, buf_dir, project_root)
+  if not raw_value or raw_value == "" then return nil, nil end
+
+  -- 1. 去除包裹引号与首尾空白
+  local clean = vim.trim(raw_value):gsub("^\"", ""):gsub("\"$", "")
+
+  -- 2. 展开常见的 Batch 宏 (@ROOT@, @DATE@) 并统一反斜杠
+  local exp = clean:gsub("@ROOT@", project_root)
+  exp = exp:gsub("@DATE@", os.date("%Y%m%d"))
+  exp = exp:gsub("\\", "/")
+
+  -- 直接命中本地真实文件
+  if file_readable(exp) then
+    return vim.fs.normalize(exp), "direct"
+  end
+
+  -- 3. 去掉 Windows 盘符（如 C:/ops/foo.bat -> ops/foo.bat）
+  local no_drive = exp:gsub("^[A-Za-z]:[/\\]*", "")
+
+  -- 4. 提取纯文件名（basename）
+  local filename = vim.fs.basename(no_drive)
+  if not filename or filename == "" then return nil, nil end
+
+  -- 5. 多路径候选列表依次查找（当前目录、项目根目录、常见子目录）
+  local candidates = {
+    project_root .. "/" .. no_drive,
+    buf_dir .. "/" .. no_drive,
+    buf_dir .. "/" .. filename,
+    buf_dir .. "/../" .. filename,
+    project_root .. "/" .. filename,
+    project_root .. "/windows-batch/" .. filename,
+    project_root .. "/scripts/" .. filename,
+    project_root .. "/scripts/linux/" .. filename,
+    project_root .. "/scripts/windows/" .. filename,
+    project_root .. "/data/" .. filename,
+    project_root .. "/data/input/" .. filename,
+    project_root .. "/data/output/" .. filename,
+    project_root .. "/bin/" .. filename,
+    project_root .. "/conf/" .. filename,
+    project_root .. "/config/" .. filename,
+    project_root .. "/etc/" .. filename,
+    project_root .. "/src/" .. filename,
+    project_root .. "/cobol-workbook/" .. filename,
+    project_root .. "/cobol-workbook/src/" .. filename,
+    project_root .. "/cobol-workbook/data/input/" .. filename,
+    project_root .. "/cobol-workbook/data/output/" .. filename,
+  }
+
+  local seen = {}
+  for _, cand in ipairs(candidates) do
+    local norm = vim.fs.normalize(cand)
+    if not seen[norm] then
+      seen[norm] = true
+      if file_readable(norm) then
+        return norm, "candidate"
+      end
+    end
+  end
+
+  -- 6. 最终兜底：利用 Neovim 内置的 vim.fs.find 在项目目录树中进行广度优先搜索
+  local found = vim.fs.find(filename, { path = project_root, upward = false, type = "file", limit = 1 })
+  if found and #found > 0 and file_readable(found[1]) then
+    return vim.fs.normalize(found[1]), "search"
+  end
+
+  return nil, nil
+end
+
+--- 扫描并收集当前脚本可能关联的 .conf 配置文件（包含跨盘符路径智能解析）
+local function find_conf_files(bufnr, buf_dir, project_root)
   local conf_paths = {}
   local seen = {}
 
   local function add_conf(p)
     if p and p ~= "" then
-      local norm = vim.fs.normalize(p)
-      if not seen[norm] and file_readable(norm) then
-        seen[norm] = true
-        table.insert(conf_paths, norm)
+      local matched, _ = resolve_candidate_file(p, buf_dir, project_root)
+      if matched and not seen[matched] then
+        seen[matched] = true
+        table.insert(conf_paths, matched)
       end
     end
   end
 
-  -- 1. 扫描当前 buffer 中的文件名引用（如 CONFIG_FILE=%~dp0night-batch.conf 或 call ... foo.conf）
+  -- 1. 扫描当前 buffer 中的文件名引用（如 CONFIG_FILE=%~dp0night-batch.conf 或 call ... C:\ops\night-batch.conf）
   if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
     for _, line in ipairs(lines) do
-      for conf_name in line:gmatch("([%w_%-%.]+%.conf)") do
-        add_conf(buf_dir .. "/" .. conf_name)
-        add_conf(buf_dir .. "/../" .. conf_name)
+      -- 匹配 *.conf 文件名或完整路径
+      for conf_ref in line:gmatch("([%w_%-%.\\/:]+%.conf)") do
+        add_conf(conf_ref)
       end
     end
   end
 
-  -- 2. 扫描当前目录与父级目录的常规 conf 文件
-  add_conf(buf_dir .. "/night-batch.conf")
-  add_conf(buf_dir .. "/../night-batch.conf")
+  -- 2. 常规配置探测
+  add_conf("night-batch.conf")
+  add_conf("batch.conf")
 
   -- 3. 扫描目录下的其他 *.conf 文件
   local glob_pattern = buf_dir .. "/*.conf"
@@ -123,12 +193,10 @@ end
 local function extract_word_at_col(line, col)
   if not line or line == "" then return "" end
   col = math.max(1, math.min(#line, col or 1))
-  -- 向左寻找词首
   local s = col
   while s > 1 and line:sub(s - 1, s - 1):match("[%w_%-]") do
     s = s - 1
   end
-  -- 向右寻找词尾
   local e = col
   while e < #line and line:sub(e + 1, e + 1):match("[%w_%-]") do
     e = e + 1
@@ -188,7 +256,7 @@ function M.extract_target_under_cursor(line, col)
   return nil
 end
 
---- 解析并生成变量的穿透预览数据
+--- 解析并生成变量的穿透预览数据（严格按照简洁三行头部格式 + 代码透视）
 function M.resolve_variable_peek(bufnr, var_name)
   local buf_path = vim.api.nvim_buf_get_name(bufnr)
   local buf_dir = buf_path ~= "" and vim.fs.dirname(buf_path) or vim.fn.getcwd()
@@ -198,6 +266,12 @@ function M.resolve_variable_peek(bufnr, var_name)
   local display_lines = {}
   local target_filetype = "dosbatch"
   local target_file_path = nil
+
+  -- 当前光标所在的行号（用于标注调用位置）
+  local cursor_line_num = 1
+  if bufnr == vim.api.nvim_get_current_buf() then
+    cursor_line_num = vim.api.nvim_win_get_cursor(0)[1]
+  end
 
   -- 1. 在当前脚本中搜索赋值语句
   local script_assignments = {}
@@ -211,8 +285,8 @@ function M.resolve_variable_peek(bufnr, var_name)
     end
   end
 
-  -- 2. 搜索配置文件中的条目
-  local conf_paths = find_conf_files(bufnr, buf_dir)
+  -- 2. 搜索配置文件中的条目（支持跨盘符与多路径查找）
+  local conf_paths = find_conf_files(bufnr, buf_dir, project_root)
   local conf_entry = nil
   for _, cp in ipairs(conf_paths) do
     local entries = parse_conf_file(cp)
@@ -233,7 +307,7 @@ function M.resolve_variable_peek(bufnr, var_name)
     if conf_entry then break end
   end
 
-  -- 3. 确定最终解析的路径或字符串值
+  -- 3. 确定原始值
   local raw_value = nil
   if conf_entry then
     raw_value = conf_entry.raw_value
@@ -241,75 +315,64 @@ function M.resolve_variable_peek(bufnr, var_name)
     raw_value = script_assignments[#script_assignments].val
   end
 
-  local expanded_path = nil
+  -- 4. 尝试智能解析跨盘符与本地候选目标文件
+  local resolved_file = nil
   if raw_value then
-    -- 展开 @ROOT@ 和 @DATE@
-    local exp = raw_value:gsub("@ROOT@", project_root)
-    exp = exp:gsub("@DATE@", os.date("%Y%m%d"))
-    exp = exp:gsub("\\", "/")
-    -- 去掉包裹引号
-    exp = exp:gsub("^\"", ""):gsub("\"$", "")
-
-    if file_readable(exp) then
-      expanded_path = exp
-    else
-      -- 尝试相对 buf_dir 拼接
-      local rel_buf = vim.fs.normalize(buf_dir .. "/" .. exp)
-      if file_readable(rel_buf) then
-        expanded_path = rel_buf
-      end
-    end
+    resolved_file, _ = resolve_candidate_file(raw_value, buf_dir, project_root)
   end
 
-  -- 4. 构建穿透预览浮窗内容
-  local title = string.format(" [ 预览穿透: %%%s%% ] ", var_name)
+  -- 5. 按照用户指定的结构化 3 行格式组织头部：
+  -- 第一行：显示环境变量
+  table.insert(display_lines, string.format("REM 变量: %%%s%%", var_name))
 
-  -- 头部元数据区域
-  table.insert(display_lines, string.format("REM ─── 环境变量穿透元信息 ──────────────────────────────────────"))
-  table.insert(display_lines, string.format("REM 变量名称: %%%s%%", var_name))
-
-  if #script_assignments > 0 then
-    for _, sa in ipairs(script_assignments) do
-      table.insert(display_lines, string.format("REM 脚本赋值 (第 %d 行): %s", sa.line, sa.expr))
-    end
-  end
-
+  -- 第二行：显示调用/定义该环境变量的路径与位置
+  local source_str = ""
+  local rel_buf_path = buf_path ~= "" and buf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "") or "当前脚本"
   if conf_entry then
     local rel_conf = conf_entry.conf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "")
-    table.insert(display_lines, string.format("REM 设定来源: %s:%d", rel_conf, conf_entry.line))
-    table.insert(display_lines, string.format("REM 原始配置: %s=%s", conf_entry.raw_key, conf_entry.raw_value))
+    source_str = string.format("REM 来源: %s:%d (于 %s:%d 调用)", rel_conf, conf_entry.line, rel_buf_path, cursor_line_num)
+  elseif #script_assignments > 0 then
+    local sa = script_assignments[#script_assignments]
+    source_str = string.format("REM 来源: %s:%d (%s)", rel_buf_path, sa.line, sa.expr)
+  else
+    source_str = string.format("REM 来源: %s:%d (脚本调用处)", rel_buf_path, cursor_line_num)
   end
+  table.insert(display_lines, source_str)
 
-  if expanded_path then
-    target_file_path = expanded_path
-    local rel_target = expanded_path:gsub("^" .. vim.pesc(project_root) .. "/?", "")
-    target_filetype = detect_filetype_by_path(expanded_path)
-    table.insert(display_lines, string.format("REM 穿透目标: %s", rel_target))
-    table.insert(display_lines, string.format("REM ─── 目标脚本 / 文件代码实况 ───────────────────────────────"))
+  -- 第三行：显示该环境变量的具体值
+  local val_str = ""
+  if raw_value and raw_value ~= "" then
+    if resolved_file then
+      local rel_resolved = resolved_file:gsub("^" .. vim.pesc(project_root) .. "/?", "")
+      val_str = string.format("REM 取值: %s  ->  %s", raw_value, rel_resolved)
+    else
+      val_str = string.format("REM 取值: %s", raw_value)
+    end
+  else
+    val_str = string.format("REM 取值: [未在本地配置或脚本中找到静态赋值]")
+  end
+  table.insert(display_lines, val_str)
 
-    -- 读取目标文件前 35 行代码展示穿透效果
-    local target_lines = vim.fn.readfile(expanded_path, "", 35)
+  -- 6. 如果穿透命中了具体可读文件，展示分割线并直接呈现目标代码
+  if resolved_file and file_readable(resolved_file) then
+    target_file_path = resolved_file
+    target_filetype = detect_filetype_by_path(resolved_file)
+    table.insert(display_lines, string.format("REM ──────────────────────────────────────────────────────────"))
+
+    local target_lines = vim.fn.readfile(resolved_file, "", 35)
     for _, tl in ipairs(target_lines) do
       table.insert(display_lines, tl)
     end
-  else
-    if raw_value and raw_value ~= "" then
-      table.insert(display_lines, string.format("REM 解析取值: %s", raw_value))
-    else
-      table.insert(display_lines, string.format("REM [提示] 当前脚本或配置文件中未找到该变量的静态赋值"))
-    end
-    table.insert(display_lines, string.format("REM ──────────────────────────────────────────────────────────"))
   end
 
   return {
-    title = title,
     lines = display_lines,
     filetype = target_filetype,
     target_file = target_file_path,
   }
 end
 
---- 解析并生成标签（Subroutine）的穿透预览数据
+--- 解析并生成标签（Subroutine）的穿透预览数据（统一三行头部结构）
 function M.resolve_label_peek(bufnr, label_name)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local parsed = parser.parse(lines)
@@ -319,30 +382,36 @@ function M.resolve_label_peek(bufnr, label_name)
     return nil
   end
 
+  local buf_path = vim.api.nvim_buf_get_name(bufnr)
+  local buf_dir = buf_path ~= "" and vim.fs.dirname(buf_path) or vim.fn.getcwd()
+  local project_root = get_project_root(buf_dir)
+  local rel_buf_path = buf_path ~= "" and buf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "") or "当前脚本"
+
   local start_line = label_item.line
   local preview_lines = {}
-  table.insert(preview_lines, string.format("REM ─── 子程序/标签代码穿透 (第 %d 行) ───────────────────", start_line))
+
+  -- 统一三行头部
+  table.insert(preview_lines, string.format("REM 标签: :%s", label_item.name))
+  table.insert(preview_lines, string.format("REM 来源: %s:%d", rel_buf_path, start_line))
+  table.insert(preview_lines, string.format("REM 说明: 子程序定义代码段"))
+  table.insert(preview_lines, string.format("REM ──────────────────────────────────────────────────────────"))
 
   local max_lines = 30
-  local count = 0
   for i = start_line, math.min(#lines, start_line + max_lines) do
     local l = lines[i]
-    -- 若遇到下一个标签且不是第一行，则截断
     if i > start_line and l:match("^%s*:[^:]") then
       break
     end
     table.insert(preview_lines, l)
-    count = count + 1
   end
 
   return {
-    title = string.format(" [ 预览穿透: :%s (第 %d 行) ] ", label_item.name, start_line),
     lines = preview_lines,
     filetype = "dosbatch",
   }
 end
 
---- 打开完全不透明的现代浮动窗口
+--- 打开完全不透明的现代浮动窗口（无边框标题，极简外观）
 local function open_float_window(peek_data)
   if not peek_data or not peek_data.lines or #peek_data.lines == 0 then
     vim.notify("Batch: 未找到可预览的穿透内容", vim.log.levels.INFO)
@@ -350,7 +419,6 @@ local function open_float_window(peek_data)
   end
 
   local lines = peek_data.lines
-  local title = peek_data.title or " [ 预览穿透 ] "
   local filetype = peek_data.filetype or "dosbatch"
 
   -- 1. 创建 Scratch Buffer
@@ -367,9 +435,10 @@ local function open_float_window(peek_data)
     local w = vim.fn.strdisplaywidth(line)
     if w > max_line_len then max_line_len = w end
   end
-  local width = math.min(110, math.max(45, max_line_len + 4))
+  local width = math.min(110, math.max(48, max_line_len + 4))
   local height = math.min(26, math.max(3, #lines))
 
+  -- 简洁圆角浮窗，不显示顶部标题
   local win_opts = {
     relative = "cursor",
     row = 1,
@@ -378,8 +447,6 @@ local function open_float_window(peek_data)
     height = height,
     style = "minimal",
     border = "rounded",
-    title = title,
-    title_pos = "center",
   }
 
   -- 边界检查：若光标下方空间不足，则向上弹出
@@ -392,7 +459,7 @@ local function open_float_window(peek_data)
 
   -- 3. 打开原生浮动窗口，设置 100% 实体背景防穿光
   local win = vim.api.nvim_open_win(buf, false, win_opts)
-  vim.wo[win].winblend = 0 -- 100% 不透明，彻底阻挡底层文字透出
+  vim.wo[win].winblend = 0 -- 100% 不透明实底
   vim.wo[win].winhighlight = "Normal:NormalFloat,FloatBorder:FloatBorder"
   vim.wo[win].wrap = false
   vim.wo[win].cursorline = true
@@ -411,7 +478,7 @@ local function open_float_window(peek_data)
   vim.keymap.set("n", "q", close_window, { buffer = buf, silent = true, nowait = true })
   vim.keymap.set("n", "<Esc>", close_window, { buffer = buf, silent = true, nowait = true })
 
-  -- 若用户在浮窗内按 gd / 回车，且有穿透目标文件，直接跳转打开目标文件
+  -- 若用户在浮窗内按回车，且有穿透目标文件，直接跳转打开目标文件
   if peek_data.target_file and file_readable(peek_data.target_file) then
     vim.keymap.set("n", "<CR>", function()
       close_window()

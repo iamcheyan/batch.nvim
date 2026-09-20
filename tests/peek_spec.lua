@@ -30,7 +30,9 @@ vim.fn.bufload(bufnr)
 -- Resolve NIGHT_VALIDATE_BAT (assigned via conf)
 local var_res = peek.resolve_variable_peek(bufnr, "NIGHT_VALIDATE_BAT")
 assert(var_res, "var_res should not be nil")
-assert(var_res.title:find("NIGHT_VALIDATE_BAT"), "title should mention NIGHT_VALIDATE_BAT")
+assert(var_res.lines[1]:find("NIGHT_VALIDATE_BAT"), "line 1 should mention variable name: " .. tostring(var_res.lines[1]))
+assert(var_res.lines[2]:find("来源:"), "line 2 should show source: " .. tostring(var_res.lines[2]))
+assert(var_res.lines[3]:find("取值:"), "line 3 should show value: " .. tostring(var_res.lines[3]))
 assert(var_res.target_file, "target_file should be resolved")
 assert(var_res.target_file:find("validate%-input%.bat"), "target_file should point to validate-input.bat")
 assert(#var_res.lines > 5, "lines should include file content")
@@ -41,6 +43,7 @@ if not label_res then
   label_res = peek.resolve_label_peek(bufnr, "process_job")
 end
 assert(label_res, "label_res should not be nil")
+assert(label_res.lines[1]:find("标签:"), "line 1 of label peek should mention label")
 assert(#label_res.lines > 1, "label lines should be populated")
 
 print("peek_spec: OK")
