@@ -415,36 +415,85 @@ function M.resolve_variable_peek(bufnr, var_name)
     resolved_file, _ = resolve_candidate_file(raw_value, buf_dir, project_root)
   end
 
-  -- 5. 按照用户指定的结构化 3 行格式组织头部：
+  -- 5. 按照结构化 3 行格式组织头部（全英文）：
   -- 第一行：显示环境变量
-  table.insert(display_lines, string.format("REM 变量: %%%s%%", var_name))
+  table.insert(display_lines, string.format("REM Variable: %%%s%%", var_name))
 
-  -- 第二行：显示调用/定义该环境变量的路径与位置
+  -- 第二行：显示调用/定义该环境变量的路径与位置（附带下划线跳转链接元数据）
   local source_str = ""
-  local rel_buf_path = buf_path ~= "" and buf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "") or "当前脚本"
+  local source_file = nil
+  local source_line = nil
+  local source_link_start = nil
+  local source_link_end = nil
+
+  local rel_buf_path = buf_path ~= "" and buf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "") or "current script"
   if conf_entry then
+    source_file = conf_entry.conf_path
+    source_line = conf_entry.line
     local rel_conf = conf_entry.conf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "")
-    source_str = string.format("REM 来源: %s:%d (于 %s:%d 调用)", rel_conf, conf_entry.line, rel_buf_path, cursor_line_num)
+    local loc_str = string.format("%s:%d", rel_conf, conf_entry.line)
+    local prefix = "REM Source: "
+    source_link_start = #prefix
+    source_link_end = #prefix + #loc_str
+    source_str = string.format("%s%s (invoked at %s:%d)", prefix, loc_str, rel_buf_path, cursor_line_num)
   elseif active_assignment then
-    source_str = string.format("REM 来源: %s:%d (%s)", rel_buf_path, active_assignment.line, active_assignment.expr)
+    source_file = buf_path
+    source_line = active_assignment.line
+    local loc_str = string.format("%s:%d", rel_buf_path, active_assignment.line)
+    local prefix = "REM Source: "
+    source_link_start = #prefix
+    source_link_end = #prefix + #loc_str
+    source_str = string.format("%s%s (%s)", prefix, loc_str, active_assignment.expr)
   else
-    source_str = string.format("REM 来源: %s:%d (脚本调用处)", rel_buf_path, cursor_line_num)
+    source_file = buf_path
+    source_line = cursor_line_num
+    local loc_str = string.format("%s:%d", rel_buf_path, cursor_line_num)
+    local prefix = "REM Source: "
+    source_link_start = #prefix
+    source_link_end = #prefix + #loc_str
+    source_str = string.format("%s%s (script invocation)", prefix, loc_str)
   end
   table.insert(display_lines, source_str)
 
   -- 第三行：显示该环境变量的具体值
   local val_str = ""
+  local val_link_start = nil
+  local val_link_end = nil
   if raw_value and raw_value ~= "" then
     if resolved_file then
       local rel_resolved = resolved_file:gsub("^" .. vim.pesc(project_root) .. "/?", "")
-      val_str = string.format("REM 取值: %s  ->  %s  (点击或按回车直达)", raw_value, rel_resolved)
+      local prefix = string.format("REM Value: %s  ->  ", raw_value)
+      val_link_start = #prefix
+      val_link_end = #prefix + #rel_resolved
+      val_str = string.format("%s%s", prefix, rel_resolved)
     else
-      val_str = string.format("REM 取值: %s", raw_value)
+      val_str = string.format("REM Value: %s", raw_value)
     end
   else
-    val_str = string.format("REM 取值: [未在本地配置或脚本中找到静态赋值]")
+    val_str = "REM Value: [No static assignment found in config or script]"
   end
   table.insert(display_lines, val_str)
+
+  -- 收集下划线高亮范围
+  local links = {}
+  if source_link_start and source_link_end then
+    table.insert(links, {
+      line = 1, -- 0-indexed line 1 (second line)
+      start_col = source_link_start,
+      end_col = source_link_end,
+      file = source_file,
+      line_num = source_line,
+    })
+  end
+  if val_link_start and val_link_end and resolved_file then
+    table.insert(links, {
+      line = 2, -- 0-indexed line 2 (third line)
+      start_col = val_link_start,
+      end_col = val_link_end,
+      file = resolved_file,
+      line_num = 1,
+    })
+  end
 
   -- 6. 如果穿透命中了具体可读文件，展示分割线并直接呈现目标代码
   if resolved_file and file_readable(resolved_file) then
@@ -463,6 +512,9 @@ function M.resolve_variable_peek(bufnr, var_name)
     filetype = target_filetype,
     target_file = target_file_path,
     target_line = 1,
+    source_file = source_file,
+    source_line = source_line,
+    links = links,
   }
 end
 
@@ -479,16 +531,30 @@ function M.resolve_label_peek(bufnr, label_name)
   local buf_path = vim.api.nvim_buf_get_name(bufnr)
   local buf_dir = buf_path ~= "" and vim.fs.dirname(buf_path) or vim.fn.getcwd()
   local project_root = get_project_root(buf_dir)
-  local rel_buf_path = buf_path ~= "" and buf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "") or "当前脚本"
+  local rel_buf_path = buf_path ~= "" and buf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "") or "current script"
 
   local start_line = label_item.line
   local preview_lines = {}
+  local links = {}
 
-  -- 统一三行头部
-  table.insert(preview_lines, string.format("REM 标签: :%s", label_item.name))
-  table.insert(preview_lines, string.format("REM 来源: %s:%d", rel_buf_path, start_line))
-  table.insert(preview_lines, string.format("REM 说明: 子程序定义代码段 (点击或按回车直达)"))
+  local loc_str = string.format("%s:%d", rel_buf_path, start_line)
+  local prefix = "REM Source: "
+  local s_start = #prefix
+  local s_end = #prefix + #loc_str
+
+  -- 统一全英文三行头部
+  table.insert(preview_lines, string.format("REM Label: :%s", label_item.name))
+  table.insert(preview_lines, string.format("%s%s", prefix, loc_str))
+  table.insert(preview_lines, string.format("REM Details: Subroutine definition block"))
   table.insert(preview_lines, string.format("REM ──────────────────────────────────────────────────────────"))
+
+  table.insert(links, {
+    line = 1,
+    start_col = s_start,
+    end_col = s_end,
+    file = buf_path,
+    line_num = start_line,
+  })
 
   local max_lines = 30
   for i = start_line, math.min(#lines, start_line + max_lines) do
@@ -502,7 +568,11 @@ function M.resolve_label_peek(bufnr, label_name)
   return {
     lines = preview_lines,
     filetype = "dosbatch",
+    target_file = buf_path,
     target_line = start_line,
+    source_file = buf_path,
+    source_line = start_line,
+    links = links,
   }
 end
 
@@ -520,7 +590,7 @@ function M.resolve_file_peek(bufnr, file_target)
     cursor_line_num = vim.api.nvim_win_get_cursor(0)[1]
   end
 
-  local rel_buf_path = buf_path ~= "" and buf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "") or "当前脚本"
+  local rel_buf_path = buf_path ~= "" and buf_path:gsub("^" .. vim.pesc(project_root) .. "/?", "") or "current script"
 
   -- 尝试解析本地工程候选文件
   local resolved_file, _ = resolve_candidate_file(raw_target, buf_dir, project_root)
@@ -529,22 +599,47 @@ function M.resolve_file_peek(bufnr, file_target)
   end
 
   local display_lines = {}
+  local links = {}
   local target_filetype = resolved_file and detect_filetype_by_path(resolved_file) or detect_filetype_by_path(filename or "")
 
   -- 第一行：显示目标文件（含原始引用）
   if raw_target and raw_target ~= filename then
-    table.insert(display_lines, string.format("REM 文件: %s (引用: %s)", filename, raw_target))
+    table.insert(display_lines, string.format("REM File: %s (ref: %s)", filename, raw_target))
   else
-    table.insert(display_lines, string.format("REM 文件: %s", filename or raw_target))
+    table.insert(display_lines, string.format("REM File: %s", filename or raw_target))
   end
 
   -- 第二行：显示来源位置
-  table.insert(display_lines, string.format("REM 来源: %s:%d (脚本引用处)", rel_buf_path, cursor_line_num))
+  local source_file = buf_path
+  local source_line = cursor_line_num
+  local loc_str = string.format("%s:%d", rel_buf_path, cursor_line_num)
+  local prefix = "REM Source: "
+  local source_link_start = #prefix
+  local source_link_end = #prefix + #loc_str
+  table.insert(display_lines, string.format("%s%s (script reference)", prefix, loc_str))
 
-  -- 第三行：显示解析出的本地路径与直达提示
+  table.insert(links, {
+    line = 1,
+    start_col = source_link_start,
+    end_col = source_link_end,
+    file = source_file,
+    line_num = source_line,
+  })
+
+  -- 第三行：显示解析出的本地路径
   if resolved_file and file_readable(resolved_file) then
     local rel_resolved = resolved_file:gsub("^" .. vim.pesc(project_root) .. "/?", "")
-    table.insert(display_lines, string.format("REM 路径: %s  (点击浮窗或按回车直达)", rel_resolved))
+    local p_prefix = "REM Path: "
+    local path_link_start = #p_prefix
+    local path_link_end = #p_prefix + #rel_resolved
+    table.insert(display_lines, string.format("%s%s", p_prefix, rel_resolved))
+    table.insert(links, {
+      line = 2,
+      start_col = path_link_start,
+      end_col = path_link_end,
+      file = resolved_file,
+      line_num = 1,
+    })
     table.insert(display_lines, string.format("REM ──────────────────────────────────────────────────────────"))
 
     local target_lines = vim.fn.readfile(resolved_file, "", 40)
@@ -552,7 +647,7 @@ function M.resolve_file_peek(bufnr, file_target)
       table.insert(display_lines, tl)
     end
   else
-    table.insert(display_lines, string.format("REM 路径: [未在工程候选路径中找到本地对应文件: %s]", filename or raw_target))
+    table.insert(display_lines, string.format("REM Path: [File not found in project candidates: %s]", filename or raw_target))
   end
 
   return {
@@ -560,6 +655,9 @@ function M.resolve_file_peek(bufnr, file_target)
     filetype = target_filetype,
     target_file = resolved_file,
     target_line = 1,
+    source_file = source_file,
+    source_line = source_line,
+    links = links,
   }
 end
 
@@ -618,6 +716,18 @@ local function open_float_window(peek_data)
   vim.wo[win].wrap = false
   vim.wo[win].cursorline = true
 
+  -- 为链接添加下划线高亮
+  local ns = vim.api.nvim_create_namespace("BatchPeekHighlights")
+  vim.api.nvim_set_hl(0, "BatchPeekLink", { underline = true, default = true })
+
+  if peek_data.links then
+    for _, link in ipairs(peek_data.links) do
+      if link.line and link.start_col and link.end_col then
+        pcall(vim.api.nvim_buf_add_highlight, buf, ns, "BatchPeekLink", link.line, link.start_col, link.end_col)
+      end
+    end
+  end
+
   M._active_win = win
   M._active_buf = buf
 
@@ -637,21 +747,53 @@ local function open_float_window(peek_data)
   end
 
   local function jump_to_target(clicked_line)
-    if peek_data.target_file and file_readable(peek_data.target_file) then
-      local target_file = peek_data.target_file
-      local line_num = peek_data.target_line or 1
-      if clicked_line and clicked_line >= 5 then
-        line_num = clicked_line - 4
+    close_window()
+
+    -- 1. 用户点击第 2 行（Source 行）或焦点在第 2 行：跳转到变量赋值/定义的来源文件与行号
+    if clicked_line == 2 and peek_data.source_file and file_readable(peek_data.source_file) then
+      vim.cmd("edit " .. vim.fn.fnameescape(peek_data.source_file))
+      if peek_data.source_line and peek_data.source_line > 0 then
+        pcall(vim.api.nvim_win_set_cursor, 0, { peek_data.source_line, 0 })
       end
-      close_window()
-      vim.cmd("edit " .. vim.fn.fnameescape(target_file))
+      return
+    end
+
+    -- 2. 用户点击代码预览行（第 5 行及以后）：定位到目标文件的对应行
+    if clicked_line and clicked_line >= 5 and peek_data.target_file and file_readable(peek_data.target_file) then
+      local line_num = clicked_line - 4
+      vim.cmd("edit " .. vim.fn.fnameescape(peek_data.target_file))
       pcall(vim.api.nvim_win_set_cursor, 0, { math.max(1, line_num), 0 })
-    elseif peek_data.target_line and peek_data.target_line > 0 then
-      local line_num = peek_data.target_line
-      close_window()
-      pcall(vim.api.nvim_win_set_cursor, origin_win, { line_num, 0 })
-    else
-      close_window()
+      return
+    end
+
+    -- 3. 用户在第 3 行（Value/Path）点击，且有目标文件：跳转到目标文件
+    if clicked_line == 3 and peek_data.target_file and file_readable(peek_data.target_file) then
+      local line_num = peek_data.target_line or 1
+      vim.cmd("edit " .. vim.fn.fnameescape(peek_data.target_file))
+      pcall(vim.api.nvim_win_set_cursor, 0, { math.max(1, line_num), 0 })
+      return
+    end
+
+    -- 4. 若有目标文件（例如 night-batch.conf 或外部 bat）：跳转到目标文件
+    if peek_data.target_file and file_readable(peek_data.target_file) then
+      local line_num = peek_data.target_line or 1
+      vim.cmd("edit " .. vim.fn.fnameescape(peek_data.target_file))
+      pcall(vim.api.nvim_win_set_cursor, 0, { math.max(1, line_num), 0 })
+      return
+    end
+
+    -- 5. 若无外部目标文件（例如值不是文件，只是变量目录或字符串），点击直接跳转到来源定义处
+    if peek_data.source_file and file_readable(peek_data.source_file) then
+      vim.cmd("edit " .. vim.fn.fnameescape(peek_data.source_file))
+      if peek_data.source_line and peek_data.source_line > 0 then
+        pcall(vim.api.nvim_win_set_cursor, 0, { peek_data.source_line, 0 })
+      end
+      return
+    end
+
+    -- 6. 标签行跳转兜底
+    if peek_data.target_line and peek_data.target_line > 0 then
+      pcall(vim.api.nvim_win_set_cursor, origin_win, { peek_data.target_line, 0 })
     end
   end
 
@@ -671,17 +813,17 @@ local function open_float_window(peek_data)
   vim.keymap.set("n", "<CR>", function()
     local cursor_row = vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_cursor(win)[1] or 1
     jump_to_target(cursor_row)
-  end, { buffer = buf, silent = true, desc = "打开穿透目标文件" })
+  end, { buffer = buf, silent = true, desc = "Jump to peek target" })
 
   vim.keymap.set("n", "gd", function()
     local cursor_row = vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_cursor(win)[1] or 1
     jump_to_target(cursor_row)
-  end, { buffer = buf, silent = true, desc = "打开穿透目标文件" })
+  end, { buffer = buf, silent = true, desc = "Jump to peek target" })
 
   vim.keymap.set("n", "o", function()
     local cursor_row = vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_cursor(win)[1] or 1
     jump_to_target(cursor_row)
-  end, { buffer = buf, silent = true, desc = "打开穿透目标文件" })
+  end, { buffer = buf, silent = true, desc = "Jump to peek target" })
 
   -- 浮窗内按 q 或 <Esc> 关闭
   vim.keymap.set("n", "q", close_window, { buffer = buf, silent = true, nowait = true })
@@ -746,7 +888,7 @@ function M.peek(bufnr)
 
   local target = M.extract_target_under_cursor(line, col)
   if not target then
-    vim.notify("Batch: 光标处未检测到环境变量、文件或标签", vim.log.levels.INFO)
+    vim.notify("Batch: No peekable variable, file, or label at cursor", vim.log.levels.INFO)
     return nil
   end
 
@@ -760,7 +902,7 @@ function M.peek(bufnr)
   end
 
   if not peek_data then
-    vim.notify("Batch: 无法解析 " .. tostring(target.name or target.raw) .. " 的穿透信息", vim.log.levels.WARN)
+    vim.notify("Batch: Unable to resolve peek info for " .. tostring(target.name or target.raw), vim.log.levels.WARN)
     return nil
   end
 

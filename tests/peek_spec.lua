@@ -53,11 +53,12 @@ vim.fn.bufload(bufnr)
 local file_res = peek.resolve_file_peek(bufnr, target_conf_ext)
 assert(file_res, "file_res should not be nil")
 assert(file_res.lines[1]:find("night%-batch%.conf"), "file_res line 1 should mention filename: " .. tostring(file_res.lines[1]))
-assert(file_res.lines[2]:find("来源:"), "file_res line 2 should show source: " .. tostring(file_res.lines[2]))
-assert(file_res.lines[3]:find("路径:"), "file_res line 3 should show path: " .. tostring(file_res.lines[3]))
+assert(file_res.lines[2]:find("Source:"), "file_res line 2 should show source: " .. tostring(file_res.lines[2]))
+assert(file_res.lines[3]:find("Path:"), "file_res line 3 should show path: " .. tostring(file_res.lines[3]))
 assert(file_res.target_file, "file_res target_file should be resolved")
 assert(file_res.target_file:find("night%-batch%.conf"), "file_res target_file should point to night-batch.conf")
 assert(#file_res.lines > 5, "file_res lines should include file content")
+assert(#file_res.links >= 1, "file_res should have clickable links")
 
 -- Resolve CONFIG_FILE (assigned in script via %~dp0night-batch.conf)
 local config_file_res = peek.resolve_variable_peek(bufnr, "CONFIG_FILE")
@@ -69,11 +70,12 @@ assert(config_file_res.target_file:find("night%-batch%.conf"), "config_file_res 
 local var_res = peek.resolve_variable_peek(bufnr, "NIGHT_VALIDATE_BAT")
 assert(var_res, "var_res should not be nil")
 assert(var_res.lines[1]:find("NIGHT_VALIDATE_BAT"), "line 1 should mention variable name: " .. tostring(var_res.lines[1]))
-assert(var_res.lines[2]:find("来源:"), "line 2 should show source: " .. tostring(var_res.lines[2]))
-assert(var_res.lines[3]:find("取值:"), "line 3 should show value: " .. tostring(var_res.lines[3]))
+assert(var_res.lines[2]:find("Source:"), "line 2 should show source: " .. tostring(var_res.lines[2]))
+assert(var_res.lines[3]:find("Value:"), "line 3 should show value: " .. tostring(var_res.lines[3]))
 assert(var_res.target_file, "target_file should be resolved")
 assert(var_res.target_file:find("validate%-input%.bat"), "target_file should point to validate-input.bat")
 assert(#var_res.lines > 5, "lines should include file content")
+assert(#var_res.links >= 1, "var_res should have clickable links")
 
 -- Resolve label
 local label_res = peek.resolve_label_peek(bufnr, "usage")
@@ -81,7 +83,7 @@ if not label_res then
   label_res = peek.resolve_label_peek(bufnr, "process_job")
 end
 assert(label_res, "label_res should not be nil")
-assert(label_res.lines[1]:find("标签:"), "line 1 of label peek should mention label")
+assert(label_res.lines[1]:find("Label:"), "line 1 of label peek should mention label")
 assert(#label_res.lines > 1, "label lines should be populated")
 
 -- Test 3: Interactive float window & jump test
@@ -94,8 +96,9 @@ assert(win and vim.api.nvim_win_is_valid(win), "Floating window should be opened
 local float_buf = vim.api.nvim_win_get_buf(win)
 local float_lines = vim.api.nvim_buf_get_lines(float_buf, 0, -1, false)
 assert(#float_lines > 5, "Float buffer should contain preview lines")
-assert(float_lines[1]:find("night%-batch%.conf"), "Float line 1 should have night-batch.conf: " .. float_lines[1])
-assert(float_lines[3]:find("点击浮窗或按回车直达"), "Float line 3 should have jump hint: " .. float_lines[3])
+assert(float_lines[1]:find("File: night%-batch%.conf"), "Float line 1 should have File: " .. float_lines[1])
+assert(float_lines[2]:find("Source: "), "Float line 2 should have Source: " .. float_lines[2])
+assert(float_lines[3]:find("Path: "), "Float line 3 should have Path: " .. float_lines[3])
 
 -- Pressing K again should focus into the window
 local win_focused = peek.peek(bufnr)
@@ -107,5 +110,28 @@ vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true),
 local active_buf = vim.api.nvim_get_current_buf()
 local active_buf_name = vim.api.nvim_buf_get_name(active_buf)
 assert(active_buf_name:find("night%-batch%.conf"), "Active buffer after <CR> should be night-batch.conf: " .. active_buf_name)
+
+-- Test 4: Variable peek source jump (e.g. %CSV2XLS_CSV_DIR% -> night-batch.conf:17)
+vim.api.nvim_set_current_buf(bufnr)
+vim.api.nvim_win_set_cursor(0, { 33, 15 }) -- line 33 is CSV_DIR=%CSV2XLS_CSV_DIR%
+local csv_win = peek.peek(bufnr)
+assert(csv_win and vim.api.nvim_win_is_valid(csv_win), "CSV2XLS_CSV_DIR peek window should open")
+local csv_buf = vim.api.nvim_win_get_buf(csv_win)
+local csv_lines = vim.api.nvim_buf_get_lines(csv_buf, 0, -1, false)
+assert(csv_lines[1]:find("Variable: %%CSV2XLS_CSV_DIR%%"), "Line 1 should mention Variable: " .. csv_lines[1])
+assert(csv_lines[2]:find("Source: windows%-batch/night%-batch%.conf:17"), "Line 2 should show night-batch.conf:17: " .. csv_lines[2])
+assert(csv_lines[3]:find("Value: @ROOT@\\data\\input\\csv"), "Line 3 should show Value: " .. csv_lines[3])
+
+-- Press K again to focus into the window
+local csv_win_focused = peek.peek(bufnr)
+assert(csv_win_focused == csv_win, "Focus into CSV window")
+-- Move cursor to line 2 (Source line) and press <CR>
+vim.api.nvim_win_set_cursor(csv_win, { 2, 5 })
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
+local source_buf = vim.api.nvim_get_current_buf()
+local source_buf_name = vim.api.nvim_buf_get_name(source_buf)
+assert(source_buf_name:find("night%-batch%.conf"), "Buffer after Source jump should be night-batch.conf: " .. source_buf_name)
+local cursor_pos = vim.api.nvim_win_get_cursor(0)
+assert(cursor_pos[1] == 17, "Cursor line should jump to line 17 in night-batch.conf, got: " .. tostring(cursor_pos[1]))
 
 print("peek_spec: OK")
