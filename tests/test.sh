@@ -3,10 +3,25 @@ set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 nvim --headless -u NONE -c "set rtp^=$root" -l "$root/tests/parser_spec.lua"
-if [[ -f /home/tetsuya/development/night-batch-lab/windows-batch/csv2xls-upload.bat ]]; then
-  BATCH_NVIM_FIXTURE=/home/tetsuya/development/night-batch-lab/windows-batch/csv2xls-upload.bat \
+nvim --headless -u NONE -c "set rtp^=$root" -l "$root/tests/filetype_spec.lua"
+# The practice fixture is spelled *.BAT, so a hard-coded lowercase path would
+# never match and the integration specs would silently skip.  Discover it
+# case-insensitively instead.
+fixture_dir=/home/tetsuya/development/night-batch-lab/windows-batch
+fixture=""
+if [[ -d $fixture_dir ]]; then
+  for candidate in "$fixture_dir"/*.[bB][aA][tT]; do
+    if [[ -f $candidate ]]; then
+      fixture=$candidate
+      break
+    fi
+  done
+fi
+
+if [[ -n $fixture ]]; then
+  BATCH_NVIM_FIXTURE=$fixture \
     nvim --headless -u NONE -c "set rtp^=$root" -l "$root/tests/night_batch_spec.lua"
-  BATCH_NVIM_FIXTURE=/home/tetsuya/development/night-batch-lab/windows-batch/csv2xls-upload.bat \
+  BATCH_NVIM_FIXTURE=$fixture \
     nvim --headless -u NONE -c "set rtp^=$root" -l "$root/tests/peek_spec.lua"
 else
   nvim --headless -u NONE -c "set rtp^=$root" -l "$root/tests/night_batch_spec.lua"

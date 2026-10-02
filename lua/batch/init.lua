@@ -47,10 +47,13 @@ function M.setup(opts)
       get_info = require("batch.context").get_info,
     })
   end
-  vim.filetype.add({ pattern = {
-    ["*.[bB][aA][tT]"] = "dosbatch",
-    ["*.[cC][mM][dD]"] = "dosbatch",
-  } })
+  -- Lua patterns, not globs: `vim.filetype.add` anchors these as '^' .. pat .. '$'.
+  vim.filetype.add({
+    pattern = {
+      [".*%.[bB][aA][tT]"] = "dosbatch",
+      [".*%.[cC][mM][dD]"] = "dosbatch",
+    },
+  })
   vim.api.nvim_create_autocmd("FileType", {
     group = vim.api.nvim_create_augroup("BatchNvim", { clear = true }),
     pattern = { "dosbatch", "batch" },
