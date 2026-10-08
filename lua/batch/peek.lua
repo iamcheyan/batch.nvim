@@ -1181,7 +1181,9 @@ function M.peek(bufnr)
 
   local target = M.extract_target_under_cursor(line, col)
   local filetype = vim.bo[bufnr].filetype
-  if filetype == "dosini" or filetype == "conf" then
+  local extension = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":e"):lower()
+  local is_config_buffer = extension == "conf" or filetype == "dosini" or filetype == "conf"
+  if is_config_buffer then
     -- On a config assignment, K anywhere on the line resolves its LHS unless
     -- the cursor is already on an explicit %VAR%, !VAR!, or ${VAR} reference.
     local config_key = line:match("^%s*([%w_%-]+)%s*=")
@@ -1197,7 +1199,7 @@ function M.peek(bufnr)
 
   local peek_data = nil
   if target.type == "variable" then
-    if filetype == "dosini" or filetype == "conf" then
+    if is_config_buffer then
       local shell_reference = target.explicit and target.raw and target.raw:match("^%${") ~= nil
       local batch_reference = target.explicit and target.raw and (target.raw:match("^%%") or target.raw:match("^!"))
       peek_data = M.resolve_config_variable_peek(bufnr, target.name,

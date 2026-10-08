@@ -40,6 +40,10 @@ end
 
 local function attach_config(bufnr)
   if vim.b[bufnr].batch_nvim_config_attached then return end
+  local extension = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":e"):lower()
+  if extension ~= "conf" and vim.bo[bufnr].filetype ~= "dosini" and vim.bo[bufnr].filetype ~= "conf" then
+    return
+  end
   vim.b[bufnr].batch_nvim_config_attached = true
   if M.config.enable_peek then
     vim.keymap.set("n", "K", function() peek.peek(bufnr) end, { buffer = bufnr, desc = "Batch: expand config variable" })
@@ -65,11 +69,11 @@ function M.setup(opts)
   })
   vim.api.nvim_create_autocmd("FileType", {
     group = vim.api.nvim_create_augroup("BatchNvim", { clear = true }),
-    pattern = { "dosbatch", "batch", "dosini", "conf" },
+    pattern = { "dosbatch", "batch", "dosini", "conf", "sh" },
     callback = function(args)
       if args.match == "dosbatch" or args.match == "batch" then
         attach(args.buf)
-      else
+      elseif args.match == "dosini" or args.match == "conf" or args.match == "sh" then
         attach_config(args.buf)
       end
     end,

@@ -52,19 +52,19 @@ project.
 
 `gd` and `gr` mappings are not installed by default. Set `map_keys = true` to
 enable those Batch navigation mappings. Peek mappings are controlled separately
-by `enable_peek` (enabled by default): `K` / `zp` work in Batch and supported
-configuration buffers.
+by `enable_peek` (enabled by default): `K` / `zp` work in Batch and `.conf`
+configuration buffers, including files Neovim detects as `sh`.
 
 ```lua
 {
   "iamcheyan/batch.nvim",
-  ft = { "dosbatch", "batch", "dosini", "conf" },
+  ft = { "dosbatch", "batch", "dosini", "conf", "sh" },
   opts = { map_keys = true },
 }
 ```
 
 In Batch files, `K` or `zp` previews variables, `.conf` sources, files, or
-`:label` targets. In `dosini` / `conf` configuration buffers, they recursively
+:label` targets. In `.conf` configuration buffers, they recursively
 expand the current assignment and show the final string, expansion chain, and
 definition location. `%NAME%` / `!NAME!` and `${NAME}` are supported.
 

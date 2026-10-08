@@ -21,13 +21,14 @@ The plugin sets up automatically when loaded. With lazy.nvim:
 
   {
     "iamcheyan/batch.nvim",
-    ft = { "dosbatch", "batch", "dosini", "conf" },
+    ft = { "dosbatch", "batch", "dosini", "conf", "sh" },
     opts = {},
   }
 
 Buffer-local `K` and `zp` peek mappings are enabled by default and controlled
 by `enable_peek`. In Batch buffers they preview variables, labels, and files.
-In `dosini` / `conf` buffers they recursively expand `KEY=VALUE` entries.
+In `.conf` buffers (including those Neovim detects as `sh`) they recursively
+expand `KEY=VALUE` entries.
 Set `map_keys` to true if buffer-local `gd` and `gr` mappings are desired.
 
 CONFIG VARIABLE EXPANSION                                  *batch-config-peek*
