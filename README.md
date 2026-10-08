@@ -48,23 +48,36 @@ project.
 | `:BatchJumpToLabel name` | Jump to a label by name |
 | `:BatchReferences` | List `GOTO`/`CALL` references to the current target |
 | `:BatchOutline` | Open the label outline |
-| `:BatchPeek` | 预览穿透：原地浮窗预览环境变量定义、.conf 配置来源及调用的外部脚本源码 |
+| `:BatchPeek` | 预览穿透：原地浮窗预览 Batch 变量、标签和脚本；在 `.conf` 中递归展开变量并显示最终值 |
 
-Key mappings are not installed by default. This keeps normal Neovim behavior
-unchanged. To use `gd`, `gr`, and `K` / `zp` (预览穿透) for Batch navigation:
+`gd` and `gr` mappings are not installed by default. Set `map_keys = true` to
+enable those Batch navigation mappings. Peek mappings are controlled separately
+by `enable_peek` (enabled by default): `K` / `zp` work in Batch and supported
+configuration buffers.
 
 ```lua
 {
   "iamcheyan/batch.nvim",
-  ft = { "dosbatch", "batch" },
+  ft = { "dosbatch", "batch", "dosini", "conf" },
   opts = { map_keys = true },
 }
 ```
 
-When `map_keys = true`, the following mappings are active in Batch files:
-- `K` or `zp`: 原地触发“预览穿透”（Peek Through），如果光标在环境变量上（如 `%NIGHT_VALIDATE_BAT%` 或 `!INPUT_FILE!`），穿透显示赋值语句、`.conf` 键值来源以及被引用文件的真实源码；如果光标在 `:label`，就地预览子程序实现。
-- `gd`: 跳转到标签定义。
-- `gr`: 查看标签引用列表。
+In Batch files, `K` or `zp` previews variables, `.conf` sources, files, or
+`:label` targets. In `dosini` / `conf` configuration buffers, they recursively
+expand the current assignment and show the final string, expansion chain, and
+definition location. `%NAME%` / `!NAME!` and `${NAME}` are supported.
+
+### Nested config values
+
+Open a `KEY=VALUE` `.conf` file and press `K` anywhere on an assignment line to
+expand its left-hand-side variable. If the cursor is on an explicit `%NAME%`,
+`!NAME!`, or `${NAME}` reference, `K` expands that referenced variable
+instead. The preview shows the final string, expansion chain, source location,
+and any unresolved or cyclic references. Expansion is static: the plugin does
+not source the file or execute commands.
+With `map_keys = true`, Batch buffers also map `gd` to a label definition and
+`gr` to label references.
 
 ## Statusline
 

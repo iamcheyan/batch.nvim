@@ -227,6 +227,146 @@ local function parse_conf_file(conf_path)
   return entries
 end
 
+local function parse_conf_lines(lines, conf_path)
+  local entries = {}
+  for line_idx, line in ipairs(lines or {}) do
+    local trimmed = vim.trim(line)
+    if trimmed ~= "" and not vim.startswith(trimmed, "#") and not vim.startswith(trimmed, ";") then
+      local k, v = trimmed:match("^([%w_%-]+)%s*=%s*(.*)$")
+      if k and v then
+        entries[k:lower()] = { raw_key = k, raw_value = v, line = line_idx, conf_path = conf_path }
+      end
+    end
+  end
+  return entries
+end
+
+local function lookup_config_entry(entries, name, case_sensitive)
+  if case_sensitive then
+    for _, entry in pairs(entries) do
+      if entry.raw_key == name then return entry end
+    end
+    return nil
+  end
+  return entries[name:lower()]
+end
+
+--- Recursively expand references in a KEY=VALUE config file without sourcing it.
+local function expand_config_entry(entries, entry)
+  local chain, chain_seen, unresolved, unresolved_seen = {}, {}, {}, {}
+  local function add_chain(key)
+    if not chain_seen[key] then
+      chain_seen[key] = true
+      table.insert(chain, key)
+    end
+  end
+  local function add_unresolved(key)
+    if not unresolved_seen[key] then
+      unresolved_seen[key] = true
+      table.insert(unresolved, key)
+    end
+  end
+
+  local function expand(name, current, stack, depth)
+    add_chain(name)
+    if depth > 64 then
+      add_unresolved(name .. " (maximum expansion depth)")
+      return current
+    end
+    local function replace_token(token, ref_name, case_sensitive)
+      local dependency = lookup_config_entry(entries, ref_name, case_sensitive)
+      if not dependency then
+        add_unresolved(ref_name)
+        return token
+      end
+      local key = dependency.raw_key
+      if stack[key] then
+        add_unresolved("cycle: " .. key)
+        return token
+      end
+      local nested_stack = vim.tbl_extend("force", stack, { [key] = true })
+      return expand(key, dependency.raw_value, nested_stack, depth + 1)
+    end
+
+    -- Shell variable names are case-sensitive; Batch names are not.
+    current = current:gsub("%${([%w_%-]+)}", function(ref)
+      return replace_token("${" .. ref .. "}", ref, true)
+    end)
+    current = current:gsub("%%([%w_%-]+)%%", function(ref)
+      return replace_token("%" .. ref .. "%", ref, false)
+    end)
+    current = current:gsub("!([%w_%-]+)!", function(ref)
+      return replace_token("!" .. ref .. "!", ref, false)
+    end)
+    return current
+  end
+
+  local stack = { [entry.raw_key] = true }
+  local value = expand(entry.raw_key, entry.raw_value, stack, 0)
+  return value, chain, unresolved
+end
+
+function M.resolve_config_variable_peek(bufnr, var_name, case_sensitive)
+  local buf_path = vim.api.nvim_buf_get_name(bufnr)
+  local buf_dir = buf_path ~= "" and vim.fs.dirname(buf_path) or vim.fn.getcwd()
+  local project_root = get_project_root(buf_dir)
+  local sources = {}
+  local current_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  if case_sensitive == nil then
+    local has_shell_reference = false
+    for _, line in ipairs(current_lines) do
+      if line:find("%${[%w_%-]+}") then
+        has_shell_reference = true
+        break
+      end
+    end
+    case_sensitive = has_shell_reference
+  end
+  sources[#sources + 1] = { path = buf_path, entries = parse_conf_lines(current_lines, buf_path) }
+  for _, conf_path in ipairs(find_conf_files(bufnr, buf_dir, project_root)) do
+    if conf_path ~= buf_path then
+      sources[#sources + 1] = { path = conf_path, entries = parse_conf_file(conf_path) }
+    end
+  end
+
+  local found
+  for _, source in ipairs(sources) do
+    found = lookup_config_entry(source.entries, var_name, case_sensitive)
+    if found then break end
+  end
+  if not found then return nil end
+
+  local value, chain, unresolved = expand_config_entry(sources[1].entries, found)
+  -- If the definition came from another discovered config, resolve in that file.
+  if found.conf_path ~= buf_path then
+    for _, source in ipairs(sources) do
+      if source.path == found.conf_path then
+        value, chain, unresolved = expand_config_entry(source.entries, found)
+        break
+      end
+    end
+  end
+
+  local display_lines = {
+    string.format("Variable: %s", found.raw_key),
+    string.format("Value: %s", value),
+    "Expansion: " .. table.concat(chain, " → "),
+    string.format("Source: %s:%d", vim.fn.fnamemodify(found.conf_path, ":~:."), found.line),
+  }
+  if #unresolved > 0 then
+    table.insert(display_lines, "Unresolved: " .. table.concat(unresolved, ", "))
+  end
+  return {
+    lines = display_lines,
+    filetype = "dosini",
+    source_file = found.conf_path,
+    source_line = found.line,
+    links = {},
+    jump_targets = {},
+    wrap = true,
+  }
+end
+
 --- 从指定行的某列提取单词
 local function extract_word_at_col(line, col)
   if not line or line == "" then return "" end
@@ -322,14 +462,21 @@ function M.extract_target_under_cursor(line, col)
   -- 2. 检查光标处的带百分号环境变量：%VAR%
   for s, var_name, e in line:gmatch("()%%([%w_]+)%%()") do
     if col >= s and col <= e then
-      return { type = "variable", name = var_name, raw = "%" .. var_name .. "%" }
+      return { type = "variable", name = var_name, raw = "%" .. var_name .. "%", explicit = true }
+    end
+  end
+
+  -- 2b. Shell-style ${NAME} references in Linux config files.
+  for s, var_name, e in line:gmatch("()%${([%w_%-]+)}()") do
+    if col >= s and col <= e then
+      return { type = "variable", name = var_name, raw = "${" .. var_name .. "}", explicit = true }
     end
   end
 
   -- 3. 寻找包含当前光标位置的 !VAR!（延迟变量）
   for s, var_name, e in line:gmatch("()!([%w_]+)!()") do
     if col >= s and col <= e then
-      return { type = "variable", name = var_name, raw = "!" .. var_name .. "!" }
+      return { type = "variable", name = var_name, raw = "!" .. var_name .. "!", explicit = true }
     end
   end
 
@@ -763,8 +910,13 @@ local function open_float_window(peek_data)
     local w = vim.fn.strdisplaywidth(line)
     if w > max_line_len then max_line_len = w end
   end
-  local width = math.min(110, math.max(48, max_line_len + 4))
-  local height = math.min(26, math.max(3, #lines))
+  local available_width = math.max(20, vim.o.columns - 6)
+  local width = math.min(110, available_width, math.max(48, max_line_len + 4))
+  local content_rows = 0
+  for _, line in ipairs(lines) do
+    content_rows = content_rows + (peek_data.wrap and math.max(1, math.ceil(vim.fn.strdisplaywidth(line) / width)) or 1)
+  end
+  local height = math.min(26, math.max(3, content_rows))
 
   -- 简洁圆角浮窗，不显示顶部标题
   local win_opts = {
@@ -788,7 +940,8 @@ local function open_float_window(peek_data)
   local win = vim.api.nvim_open_win(buf, false, win_opts)
   vim.wo[win].winblend = 0 -- 100% 不透明实底
   vim.wo[win].winhighlight = "Normal:NormalFloat,FloatBorder:FloatBorder"
-  vim.wo[win].wrap = false
+  vim.wo[win].wrap = peek_data.wrap == true
+  vim.wo[win].linebreak = peek_data.wrap == true
   vim.wo[win].cursorline = true
 
   -- 为链接添加下划线高亮
@@ -1027,6 +1180,16 @@ function M.peek(bufnr)
   local col = vim.fn.col(".")
 
   local target = M.extract_target_under_cursor(line, col)
+  local filetype = vim.bo[bufnr].filetype
+  if filetype == "dosini" or filetype == "conf" then
+    -- On a config assignment, K anywhere on the line resolves its LHS unless
+    -- the cursor is already on an explicit %VAR%, !VAR!, or ${VAR} reference.
+    local config_key = line:match("^%s*([%w_%-]+)%s*=")
+    local explicit_reference = target and target.type == "variable" and target.explicit
+    if config_key and not explicit_reference then
+      target = { type = "variable", name = config_key, raw = config_key }
+    end
+  end
   if not target then
     vim.notify("Batch: No peekable variable, file, or label at cursor", vim.log.levels.INFO)
     return nil
@@ -1034,7 +1197,14 @@ function M.peek(bufnr)
 
   local peek_data = nil
   if target.type == "variable" then
-    peek_data = M.resolve_variable_peek(bufnr, target.name)
+    if filetype == "dosini" or filetype == "conf" then
+      local shell_reference = target.explicit and target.raw and target.raw:match("^%${") ~= nil
+      local batch_reference = target.explicit and target.raw and (target.raw:match("^%%") or target.raw:match("^!"))
+      peek_data = M.resolve_config_variable_peek(bufnr, target.name,
+        shell_reference and true or (batch_reference and false or nil))
+    else
+      peek_data = M.resolve_variable_peek(bufnr, target.name)
+    end
   elseif target.type == "label" then
     peek_data = M.resolve_label_peek(bufnr, target.name)
   elseif target.type == "file" then

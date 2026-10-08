@@ -38,6 +38,15 @@ local function attach(bufnr)
   end
 end
 
+local function attach_config(bufnr)
+  if vim.b[bufnr].batch_nvim_config_attached then return end
+  vim.b[bufnr].batch_nvim_config_attached = true
+  if M.config.enable_peek then
+    vim.keymap.set("n", "K", function() peek.peek(bufnr) end, { buffer = bufnr, desc = "Batch: expand config variable" })
+    vim.keymap.set("n", "zp", function() peek.peek(bufnr) end, { buffer = bufnr, desc = "Batch: expand config variable" })
+  end
+end
+
 function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", M.config, opts or {})
   local ok_contextline, contextline = pcall(require, "contextline")
@@ -56,8 +65,14 @@ function M.setup(opts)
   })
   vim.api.nvim_create_autocmd("FileType", {
     group = vim.api.nvim_create_augroup("BatchNvim", { clear = true }),
-    pattern = { "dosbatch", "batch" },
-    callback = function(args) attach(args.buf) end,
+    pattern = { "dosbatch", "batch", "dosini", "conf" },
+    callback = function(args)
+      if args.match == "dosbatch" or args.match == "batch" then
+        attach(args.buf)
+      else
+        attach_config(args.buf)
+      end
+    end,
   })
   vim.api.nvim_create_user_command("BatchCheck", function(args)
     diagnostics.check(args.buf)
@@ -83,7 +98,7 @@ function M.setup(opts)
   end, { desc = "Open Batch label outline", force = true })
   vim.api.nvim_create_user_command("BatchPeek", function(args)
     peek.peek(args.buf)
-  end, { desc = "Peek Batch variable, label or called script", force = true })
+  end, { desc = "Peek Batch targets or expand config variables", force = true })
 end
 
 return M

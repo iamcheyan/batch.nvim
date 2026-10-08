@@ -13,6 +13,7 @@ COMMANDS                                                    *batch-commands*
 :BatchJumpToLabel name   Jump directly to a label.
 :BatchReferences         List references to the current target.
 :BatchOutline            Open the label outline.
+:BatchPeek               Peek at a Batch target or expand a config variable.
 
 SETUP                                                        *batch-setup*
 
@@ -20,12 +21,27 @@ The plugin sets up automatically when loaded. With lazy.nvim:
 
   {
     "iamcheyan/batch.nvim",
-    ft = { "dosbatch", "batch" },
+    ft = { "dosbatch", "batch", "dosini", "conf" },
     opts = {},
   }
 
-Mappings are disabled by default. Set `map_keys` to true if buffer-local `gd`
-and `gr` mappings are desired.
+Buffer-local `K` and `zp` peek mappings are enabled by default and controlled
+by `enable_peek`. In Batch buffers they preview variables, labels, and files.
+In `dosini` / `conf` buffers they recursively expand `KEY=VALUE` entries.
+Set `map_keys` to true if buffer-local `gd` and `gr` mappings are desired.
+
+CONFIG VARIABLE EXPANSION                                  *batch-config-peek*
+
+Open a `.conf` file, place the cursor on an assignment line, and press `K` or
+`zp`. The floating preview shows the final value, expansion chain, and source
+location. When the cursor is on an explicit variable reference, that referenced
+variable is expanded instead. Supported forms are `%NAME%` and `!NAME!` for
+Batch, and `${NAME}` for Shell-style configuration. Shell references are
+case-sensitive; Batch references are case-insensitive.
+
+Expansion is static. The plugin does not source or execute the configuration.
+Undefined references remain in the displayed value and are listed as
+unresolved; cyclic references are detected and stop expanding.
 
 STATUSLINE                                                  *batch-statusline*
 
@@ -34,5 +50,5 @@ custom statusline implementation.
 
 LIMITATIONS                                                  *batch-limitations*
 
-The plugin performs structural analysis only. It does not execute cmd.exe and
-does not attempt to model every percent-expansion and delayed-expansion rule.
+The plugin does not execute cmd.exe or a Shell. It does not model every
+percent-expansion, delayed-expansion, quoting, or command-substitution rule.
