@@ -17,28 +17,30 @@ COMMANDS                                                    *batch-commands*
 
 SETUP                                                        *batch-setup*
 
-The plugin sets up automatically when loaded. With lazy.nvim:
+The plugin sets up automatically when loaded. With lazy.nvim, use buffer-read
+hooks when extensionless `setenv` configuration files should be detected:
 
   {
     "iamcheyan/batch.nvim",
-    ft = { "dosbatch", "batch", "dosini", "conf", "sh" },
+    event = { "BufReadPost", "BufNewFile" },
     opts = {},
   }
 
 Buffer-local `K` and `zp` peek mappings are enabled by default and controlled
 by `enable_peek`. In Batch buffers they preview variables, labels, and files.
-In `.conf` buffers (including those Neovim detects as `sh`) they recursively
-expand `KEY=VALUE` entries.
+In `.conf`/Shell buffers they recursively expand config assignments; an
+extensionless file is recognized when it contains a `setenv NAME VALUE` line.
 Set `map_keys` to true if buffer-local `gd` and `gr` mappings are desired.
 
 CONFIG VARIABLE EXPANSION                                  *batch-config-peek*
 
-Open a `.conf` file, place the cursor on an assignment line, and press `K` or
-`zp`. The floating preview shows the final value, expansion chain, and source
-location. When the cursor is on an explicit variable reference, that referenced
-variable is expanded instead. Supported forms are `%NAME%` and `!NAME!` for
-Batch, and `${NAME}` for Shell-style configuration. Shell references are
-case-sensitive; Batch references are case-insensitive.
+Press `K` or `zp` on `KEY=VALUE` or `setenv NAME VALUE` to preview its final
+value, expansion chain, and source location. This also works in extensionless
+files recognized by their `setenv` content. When the cursor is on an explicit
+variable reference, that referenced variable is expanded instead. Supported
+forms are `%NAME%` / `!NAME!` for Batch, and `$NAME` / `${NAME}` for Shell-style
+values. Shell references are case-sensitive; Batch references are
+case-insensitive.
 
 Expansion is static. The plugin does not source or execute the configuration.
 Undefined references remain in the displayed value and are listed as

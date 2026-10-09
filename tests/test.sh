@@ -4,6 +4,7 @@ set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 nvim --headless -u NONE -c "set rtp^=$root" -l "$root/tests/parser_spec.lua"
 nvim --headless -u NONE -c "set rtp^=$root" -l "$root/tests/filetype_spec.lua"
+nvim --headless -u NONE -c "set rtp^=$root" -l "$root/tests/setenv_config_spec.lua"
 # The practice fixture is spelled *.BAT, so a hard-coded lowercase path would
 # never match and the integration specs would silently skip.  Discover it
 # case-insensitively instead.

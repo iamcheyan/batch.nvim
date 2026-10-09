@@ -38,17 +38,21 @@ local function attach(bufnr)
   end
 end
 
-local function attach_config(bufnr)
+local function attach_config(bufnr, probe_line)
   if vim.b[bufnr].batch_nvim_config_attached then return end
-  local extension = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":e"):lower()
-  if extension ~= "conf" and vim.bo[bufnr].filetype ~= "dosini" and vim.bo[bufnr].filetype ~= "conf" then
-    return
-  end
+  if not peek.is_config_buffer(bufnr, probe_line) then return end
   vim.b[bufnr].batch_nvim_config_attached = true
   if M.config.enable_peek then
     vim.keymap.set("n", "K", function() peek.peek(bufnr) end, { buffer = bufnr, desc = "Batch: expand config variable" })
     vim.keymap.set("n", "zp", function() peek.peek(bufnr) end, { buffer = bufnr, desc = "Batch: expand config variable" })
   end
+end
+
+local function is_extensionless_text_buffer(bufnr)
+  local filetype = vim.bo[bufnr].filetype
+  if filetype ~= "" and filetype ~= "text" then return false end
+  local name = vim.fs.basename(vim.api.nvim_buf_get_name(bufnr))
+  return not name:find("%.", 2)
 end
 
 function M.setup(opts)
@@ -67,17 +71,45 @@ function M.setup(opts)
       [".*%.[cC][mM][dD]"] = "dosbatch",
     },
   })
+  local group = vim.api.nvim_create_augroup("BatchNvim", { clear = true })
   vim.api.nvim_create_autocmd("FileType", {
-    group = vim.api.nvim_create_augroup("BatchNvim", { clear = true }),
-    pattern = { "dosbatch", "batch", "dosini", "conf", "sh" },
+    group = group,
+    pattern = { "dosbatch", "batch", "dosini", "conf", "sh", "text" },
     callback = function(args)
       if args.match == "dosbatch" or args.match == "batch" then
         attach(args.buf)
-      elseif args.match == "dosini" or args.match == "conf" or args.match == "sh" then
+      else
         attach_config(args.buf)
       end
     end,
   })
+  vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {
+    group = group,
+    callback = function(args) attach_config(args.buf) end,
+  })
+  vim.api.nvim_create_autocmd("TextChanged", {
+    group = group,
+    callback = function(args)
+      local buf = args.buf
+      if vim.b[buf].batch_nvim_config_attached then return end
+      if is_extensionless_text_buffer(buf) then attach_config(buf) end
+    end,
+  })
+  vim.api.nvim_create_autocmd("TextChangedI", {
+    group = group,
+    callback = function(args)
+      local buf = args.buf
+      if vim.b[buf].batch_nvim_config_attached or not is_extensionless_text_buffer(buf) then return end
+      local line = buf == vim.api.nvim_get_current_buf() and vim.api.nvim_get_current_line() or nil
+      if peek.is_setenv_line(line) then attach_config(buf, line) end
+    end,
+  })
+  local current_buf = vim.api.nvim_get_current_buf()
+  if vim.bo[current_buf].filetype == "dosbatch" or vim.bo[current_buf].filetype == "batch" then
+    attach(current_buf)
+  else
+    attach_config(current_buf)
+  end
   vim.api.nvim_create_user_command("BatchCheck", function(args)
     diagnostics.check(args.buf)
   end, { desc = "Check Batch labels and references", force = true })

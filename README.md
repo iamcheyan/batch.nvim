@@ -48,25 +48,30 @@ project.
 | `:BatchJumpToLabel name` | Jump to a label by name |
 | `:BatchReferences` | List `GOTO`/`CALL` references to the current target |
 | `:BatchOutline` | Open the label outline |
-| `:BatchPeek` | 预览穿透：原地浮窗预览 Batch 变量、标签和脚本；在 `.conf` 中递归展开变量并显示最终值 |
+| `:BatchPeek` | 预览穿透：原地浮窗预览 Batch 变量、标签和文件；Shell 配置也可静态展开变量 |
 
 `gd` and `gr` mappings are not installed by default. Set `map_keys = true` to
 enable those Batch navigation mappings. Peek mappings are controlled separately
-by `enable_peek` (enabled by default): `K` / `zp` work in Batch and `.conf`
-configuration buffers, including files Neovim detects as `sh`.
+by `enable_peek` (enabled by default): `K` / `zp` work in Batch, `.conf`/Shell
+configuration buffers, and extensionless files containing `setenv NAME VALUE`.
+
+Use this event-based Lazy spec when you want automatic detection of extensionless
+environment files; it also keeps Batch file support enabled:
 
 ```lua
 {
   "iamcheyan/batch.nvim",
-  ft = { "dosbatch", "batch", "dosini", "conf", "sh" },
+  event = { "BufReadPost", "BufNewFile" },
   opts = { map_keys = true },
 }
 ```
 
 In Batch files, `K` or `zp` previews variables, `.conf` sources, files, or
-:label` targets. In `.conf` configuration buffers, they recursively
-expand the current assignment and show the final string, expansion chain, and
-definition location. `%NAME%` / `!NAME!` and `${NAME}` are supported.
+`:label` targets. In Shell/config buffers, they recursively expand the current
+assignment and show the final string, expansion chain, and source location.
+Supported references are `%NAME%` / `!NAME!` for Batch and `$NAME` / `${NAME}`
+for Shell-style values. `setenv NAME VALUE` and `KEY=VALUE` assignments are
+recognized; extensionless `setenv` files are identified from their contents.
 
 ### Nested config values
 
