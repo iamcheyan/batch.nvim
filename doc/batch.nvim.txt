@@ -1,6 +1,6 @@
 *batch.nvim*
 
-batch.nvim                                                *batch.nvim*
+batch.nvim                                                batch.nvim
 
 Neovim support for long Windows Batch files. It extends the native `dosbatch`
 filetype with label indexing, navigation, structural diagnostics, folding,
